@@ -10,6 +10,7 @@ from langchain_openai import ChatOpenAI
 
 from travel_agent.config import LLMConfig
 from travel_agent.tools import DEFAULT_DATE, TRAVEL_TOOLS
+from travel_agent.train_tools import get_train_tools
 
 
 BASE_SYSTEM_PROMPT_TEMPLATE = """
@@ -19,7 +20,7 @@ BASE_SYSTEM_PROMPT_TEMPLATE = """
 1. 先理解用户的出发地、目的地、行程日期、天数、人数、预算和偏好。
 2. 天气会影响出行体验。只要识别出目的地，就应调用 get_weather_info 查询目的地天气；如果识别出出发地，也可以查询出发地天气。
 3. 当用户提供了明确预算计算参数时，调用 calculate_trip_budget。不要编造酒店、餐饮、门票费用；缺少参数时，在最终方案中说明需要用户补充。
-4. 当识别出出发地和目的地时，调用 get_transport_advice 获取交通建议。
+4. 当识别出出发地和目的地时，调用 get_transport_advice 获取驾车路线参考；若城市间距离适合火车/高铁出行（跨城、超过约50公里），必须同时调用 search_train_tickets 查询真实火车票余票和时刻。不得仅凭 get_transport_advice 的通用文字建议编造火车信息。
 5. 工具调用后，综合工具结果生成清晰、可执行、面向真实用户的中文旅行规划。
 6. 输出必须包含：需求理解、思考摘要、工具调用依据、天气参考、交通建议、每日路线、预算分析或预算缺失说明、注意事项。
 7. 今天的默认规划日期参考为 __DEFAULT_DATE__。如果用户说"明天"，可使用这个日期。
@@ -38,7 +39,7 @@ BASE_SYSTEM_PROMPT_TEMPLATE = """
   "daily_itinerary": [{"day": 1, "title": "当日主题", "activities": ["活动1", "活动2"], "meals": ["餐饮建议"], "accommodation": "住宿建议"}],
   "budget": {"total": 0, "breakdown": {"项目": 0}, "currency": "CNY", "notes": "预算说明"},
   "tips": ["提示1", "提示2"],
-  "poi_recommendations": [{"category": "分类标签", "items": [{"name": "地点名", "type": "类型", "address": "地址"}]}]
+  "poi_recommendations": [{"category": "分类标签", "items": [{"name": "地点名", "type": "类型", "address": "地址", "rating": "评分", "cost": "人均费用", "tel": "电话", "location": "经纬度", "map_url": "地图链接"}]}]
 }
 ```
 要求：内容必须与你的 Markdown 回答保持一致；无数据时使用空数组 []；json 代码块必须放在回答最末尾；不要在 json 之后添加任何文本；不要因为用户要求简短、快速或只回答一句话而省略 json 代码块。
@@ -57,16 +58,31 @@ THINKING_MODE_PROMPT = """
 REAL_DATA_TOOL_PROMPT = """
 当前项目已接入真实数据工具：
 1. get_weather_info 会优先使用和风天气查询实时天气和3日预报，失败时回退 Open-Meteo。
-2. get_transport_advice 会优先使用高德地图解析路线距离、驾车耗时和费用估算，失败时回退通用交通建议。
-3. search_travel_pois 可用高德地图搜索目的地景点、博物馆、餐饮、商圈、酒店等 POI。
-4. get_place_location 可用高德地图核验地点地址和经纬度。
+2. get_air_quality_info 可用和风天气查询实时空气质量，适合判断户外活动、老人儿童出行和骑行步行舒适度。
+3. get_weather_alerts 可用和风天气查询当前天气灾害预警，适合补充安全提醒。
+4. get_transport_advice 会优先使用高德地图解析路线距离、驾车耗时和费用估算，失败时回退通用交通建议。
+5. get_public_transit_plan 可用高德地图查询公交/地铁换乘方案，适合市内景点、车站、酒店之间移动。
+6. search_travel_pois 可用高德地图搜索目的地景点、博物馆、餐饮、商圈、酒店等 POI。
+7. search_nearby_pois 可用高德地图围绕某个景点、车站或酒店查询周边餐饮、住宿、咖啡、地铁站等 POI。
+8. get_place_location 可用高德地图核验地点地址和经纬度。
+9. get_map_marker_link 可生成不暴露 API Key 的高德地图地点标记链接，适合放入 POI 或注意事项。
+10. search_train_tickets 可用 12306 查询真实火车票余票（高铁/动车/普速），支持按车型筛选和数量限制。
+11. search_interline_train_tickets 可用 12306 查询中转余票方案，适合直达车次少、不合适或用户明确接受中转时调用。
+12. get_train_route 可用 12306 查询特定车次的经停站和时刻表。
 
 使用要求：
 - 当用户请求具体目的地旅行规划时，除了天气和交通，优先调用 search_travel_pois 至少 3 次：分别搜索"景点"、"餐饮"或"本地菜"、"商圈"或"购物"。如果行程涉及住宿，还应搜索"酒店"。
+- 当用户行程包含较多户外活动、老人儿童出行、骑行步行、海边/山地/恶劣天气风险，或用户询问是否适合出行时，可调用 get_air_quality_info 和 get_weather_alerts，并把可用的空气质量和预警信息写入 tips；如果工具返回"暂不可用"，不要把它当作规划失败，只需忽略或简短说明。
+- 当行程包含车站到酒店、酒店到景点、景点到景点等城市内移动时，优先调用 get_public_transit_plan 获取真实公交/地铁换乘参考，并把耗时、步行距离、费用和主要线路写入 transport_options 或 daily_itinerary。若工具结果同时包含"地铁优先"和"公交备选"，最终回答中必须至少保留一个公交备选方案，不能只写地铁。
+- 当需要推荐"某景点附近吃什么""车站附近住哪里""酒店附近有什么"时，优先调用 search_nearby_pois，而不是只做全城 POI 搜索；周边搜索结果同样应写入 poi_recommendations。
 - 当地点名称可能模糊或需要核验时，调用 get_place_location。
-- 最终回答的 JSON 代码块中必须包含 poi_recommendations 字段，将 search_travel_pois 返回的真实 POI 结果按类别分组填入。每个 item 必须包含 name（地点名）、type（POI 类型）和 address（地址）。示例：
-  {"category": "景点推荐", "items": [{"name": "西湖", "type": "风景名胜", "address": "杭州市西湖区龙井路1号"}]}
-- 最终回答应说明关键数据来源，例如"天气来自和风天气""地点和路线来自高德地图"。
+- 当最终方案里出现关键集合点、住宿区域或核心景点时，可调用 get_map_marker_link 获取地图链接；如果写入 JSON，可放在 poi_recommendations.items 的 map_url 字段或 tips 中。
+- 最终回答的 JSON 代码块中必须包含 poi_recommendations 字段，将 search_travel_pois 返回的真实 POI 结果按类别分组填入。每个 item 必须包含 name（地点名）、type（POI 类型）和 address（地址）；如果工具返回了评分、人均、电话、经纬度或照片，也尽量填入 rating、cost、tel、location、photo_url。示例：
+  {"category": "景点推荐", "items": [{"name": "西湖", "type": "风景名胜", "address": "杭州市西湖区龙井路1号", "rating": "4.8", "location": "120.1,30.2"}]}
+- 关键规则：get_transport_advice 只返回驾车路线数据，不含火车信息。当行程涉及跨城时，必须在调用 get_transport_advice 之后额外调用 search_train_tickets 查询真实火车票。即使 get_transport_advice 结果中出现了"高铁"文字，那只是通用建议而非真实车次数据，不能替代 search_train_tickets。
+- 用户提到"高铁"时传 train_filter_flags="G"，提到"动车"时传"D"。将 search_train_tickets 返回的车次号、出发/到达时刻、座型余票、票价如实地写入 transport_options（每条一个方案：mode 为"高铁 G车次号"，duration 为历时，cost_estimate 为座型+票价）和 daily_itinerary 的交通步骤中。
+- 若 search_train_tickets 没有查到合适直达车，或用户提到"中转/换乘/怎么转车"，应调用 search_interline_train_tickets；不得自行编造中转车次。
+- 最终回答应说明关键数据来源，例如"天气和空气质量来自和风天气""地点和路线来自高德地图""火车票来自12306"。
 """
 
 
@@ -112,8 +128,9 @@ def build_agent(config: LLMConfig, thinking_mode: bool = False):
         timeout=config.timeout,
         **llm_kwargs,
     )
-    print(f"\nLLM模式：{'深度思考模式' if thinking_mode else '普通模式'} | 模型：{selected_model}")
-    return create_agent(model=llm, tools=TRAVEL_TOOLS, system_prompt=system_prompt)
+    all_tools = TRAVEL_TOOLS + get_train_tools()
+    print(f"\nLLM模式：{'深度思考模式' if thinking_mode else '普通模式'} | 模型：{selected_model} | 工具数：{len(all_tools)}")
+    return create_agent(model=llm, tools=all_tools, system_prompt=system_prompt)
 
 
 def message_text(message: BaseMessage) -> str:
@@ -663,13 +680,21 @@ def run_offline_demo(user_input: str) -> str:
         ],
         "transport_options": [
             {
-                "mode": "高铁",
-                "from": "郑州",
-                "to": "杭州",
-                "duration": "约4小时",
-                "cost_estimate": "300-500元",
-                "notes": "建议提前购票，杭州东站下车换乘地铁1号线。",
-            }
+                "mode": "高铁 G1880",
+                "from": "郑州东",
+                "to": "杭州东",
+                "duration": "约4小时18分",
+                "cost_estimate": "二等座 417元 / 一等座 668元",
+                "notes": "06:52-11:10，数据源：12306。建议提前购票，杭州东站下车换乘地铁1号线。",
+            },
+            {
+                "mode": "高铁 G3116",
+                "from": "郑州东",
+                "to": "杭州东",
+                "duration": "约4小时50分",
+                "cost_estimate": "二等座 386元 / 一等座 617元",
+                "notes": "08:28-13:18，数据源：12306。备选车次，时间较宽裕。",
+            },
         ],
         "daily_itinerary": [
             {
@@ -710,18 +735,18 @@ def run_offline_demo(user_input: str) -> str:
             {
                 "category": "景点推荐",
                 "items": [
-                    {"name": "西湖风景名胜区", "type": "风景名胜", "address": "杭州市西湖区龙井路1号"},
-                    {"name": "灵隐寺", "type": "寺庙", "address": "杭州市西湖区法云弄1号"},
-                    {"name": "西溪国家湿地公园", "type": "公园", "address": "杭州市西湖区天目山路518号"},
-                    {"name": "雷峰塔", "type": "文物古迹", "address": "杭州市西湖区南山路15号"},
+                    {"name": "西湖风景名胜区", "type": "风景名胜", "address": "杭州市西湖区龙井路1号", "rating": "4.8", "location": "120.130396,30.259242"},
+                    {"name": "灵隐寺", "type": "寺庙", "address": "杭州市西湖区法云弄1号", "rating": "4.7", "location": "120.102371,30.240826"},
+                    {"name": "西溪国家湿地公园", "type": "公园", "address": "杭州市西湖区天目山路518号", "rating": "4.6"},
+                    {"name": "雷峰塔", "type": "文物古迹", "address": "杭州市西湖区南山路15号", "rating": "4.5"},
                 ],
             },
             {
                 "category": "餐饮推荐",
                 "items": [
-                    {"name": "楼外楼", "type": "杭帮菜", "address": "杭州市西湖区孤山路30号"},
-                    {"name": "知味观", "type": "小吃", "address": "杭州市上城区仁和路83号"},
-                    {"name": "绿茶餐厅", "type": "创意菜", "address": "杭州市西湖区龙井路83号"},
+                    {"name": "楼外楼", "type": "杭帮菜", "address": "杭州市西湖区孤山路30号", "cost": "150元", "tel": "0571-87969682"},
+                    {"name": "知味观", "type": "小吃", "address": "杭州市上城区仁和路83号", "cost": "60元"},
+                    {"name": "绿茶餐厅", "type": "创意菜", "address": "杭州市西湖区龙井路83号", "cost": "80元"},
                 ],
             },
             {

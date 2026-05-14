@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import time
 import os
+import re
 from datetime import datetime, timedelta
 
 import requests
@@ -33,6 +34,7 @@ WEATHER_CODES = {
 }
 
 AMAP_BASE_URL = "https://restapi.amap.com/v3"
+COORDINATE_RE = re.compile(r"^\s*(-?\d+(?:\.\d+)?)\s*,\s*(-?\d+(?:\.\d+)?)\s*$")
 
 
 def _get_env_key(name: str) -> str:
@@ -58,17 +60,88 @@ def _qweather_host() -> str:
     return _get_env_key("QWEATHER_API_HOST").removeprefix("https://").removeprefix("http://").strip("/")
 
 
+def _qweather_headers() -> dict[str, str]:
+    return {"X-QW-Api-Key": _qweather_key()}
+
+
+def _qweather_lookup(city: str) -> dict | None:
+    qweather_key = _qweather_key()
+    qweather_host = _qweather_host()
+    if not qweather_key or not qweather_host:
+        return None
+    geo_data = _request_json(
+        f"https://{qweather_host}/geo/v2/city/lookup",
+        {"location": city, "lang": "zh"},
+        headers=_qweather_headers(),
+    )
+    locations = geo_data.get("location") or []
+    return locations[0] if locations else None
+
+
 def _amap_geocode(address: str, city: str = "") -> dict | None:
     key = _amap_key()
     if not key:
         return None
-    data = _request_json(
-        f"{AMAP_BASE_URL}/geocode/geo",
-        {"key": key, "address": address, "city": city or None, "output": "JSON"},
-    )
-    if data.get("status") != "1" or not data.get("geocodes"):
+    coordinate = _normalize_coordinate(address)
+    if coordinate:
+        return {
+            "location": coordinate,
+            "formatted_address": address,
+            "province": "",
+            "city": city,
+            "district": "",
+            "level": "经纬度",
+        }
+
+    city_candidates = []
+    if city:
+        city_candidates.extend([city, f"{city}市" if not city.endswith("市") else city])
+    city_candidates.append("")
+    for city_name in dict.fromkeys(city_candidates):
+        data = _request_json(
+            f"{AMAP_BASE_URL}/geocode/geo",
+            {"key": key, "address": address, "city": city_name or None, "output": "JSON"},
+        )
+        if data.get("status") == "1" and data.get("geocodes"):
+            return data["geocodes"][0]
+
+    for city_name in dict.fromkeys(city_candidates):
+        data = _request_json(
+            f"{AMAP_BASE_URL}/place/text",
+            {
+                "key": key,
+                "keywords": address,
+                "city": city_name or None,
+                "citylimit": "true" if city_name else "false",
+                "offset": 1,
+                "page": 1,
+                "extensions": "base",
+                "output": "JSON",
+            },
+        )
+        pois = data.get("pois") or []
+        if data.get("status") == "1" and pois:
+            poi = pois[0]
+            return {
+                "location": poi.get("location", ""),
+                "formatted_address": poi.get("address") or poi.get("name") or address,
+                "province": poi.get("pname", ""),
+                "city": poi.get("cityname", city),
+                "district": poi.get("adname", ""),
+                "level": "POI",
+            }
+    return None
+
+
+def _normalize_coordinate(value: str) -> str | None:
+    match = COORDINATE_RE.match(str(value or ""))
+    if not match:
         return None
-    return data["geocodes"][0]
+    lon = float(match.group(1))
+    lat = float(match.group(2))
+    if -180 <= lon <= 180 and -90 <= lat <= 90:
+        return f"{lon:.6f},{lat:.6f}"
+    return None
 
 
 def _amap_location(address: str, city: str = "") -> tuple[str, str] | None:
@@ -96,6 +169,109 @@ def _format_km(meters: int | float | str) -> str:
     except (TypeError, ValueError):
         return "未知"
     return f"{km:.1f}公里"
+
+
+def _city_name_from_geocode(info: dict | None, fallback: str) -> str:
+    if not info:
+        return fallback
+    city = info.get("city")
+    if isinstance(city, list):
+        city = city[0] if city else ""
+    province = info.get("province")
+    if isinstance(province, list):
+        province = province[0] if province else ""
+    return str(city or province or fallback)
+
+
+def _poi_scalar(value: object, default: str = "") -> str:
+    if value is None or value == [] or value == {}:
+        return default
+    if isinstance(value, list):
+        return str(value[0]) if value else default
+    return str(value)
+
+
+def _format_transit_cost(cost: object) -> str:
+    value = _poi_scalar(cost, "")
+    if not value:
+        return "未知"
+    return value if value.endswith("元") else f"{value}元"
+
+
+def _format_transit_segment(segment: dict) -> str:
+    bus_info = segment.get("bus") or {}
+    buslines = bus_info.get("buslines") or []
+    if buslines:
+        line = buslines[0]
+        name = _poi_scalar(line.get("name"), "未知线路")
+        departure = _poi_scalar(line.get("departure_stop", {}).get("name"), "未知上车站")
+        arrival = _poi_scalar(line.get("arrival_stop", {}).get("name"), "未知下车站")
+        stops = _poi_scalar(line.get("via_num"), "未知")
+        return f"{name}：{departure} → {arrival}，约{stops}站"
+
+    walking = segment.get("walking") or {}
+    distance = walking.get("distance")
+    if distance:
+        return f"步行约{_format_km(distance)}"
+    return "换乘步骤信息不完整"
+
+
+def _transit_mode_label(transit: dict) -> str:
+    names: list[str] = []
+    for segment in transit.get("segments") or []:
+        if not isinstance(segment, dict):
+            continue
+        buslines = (segment.get("bus") or {}).get("buslines") or []
+        for line in buslines:
+            name = _poi_scalar(line.get("name"), "")
+            if name:
+                names.append(name)
+    has_rail = any("地铁" in name or "轨道交通" in name for name in names)
+    has_bus = any("路" in name and "地铁" not in name and "轨道交通" not in name for name in names)
+    if has_rail and has_bus:
+        return "地铁+公交换乘"
+    if has_rail:
+        return "地铁优先"
+    if has_bus:
+        return "公交备选"
+    return "公共交通"
+
+
+def _format_poi_lines(title: str, pois: list[dict], limit: int) -> str:
+    lines = ["数据源：高德地图", title]
+    for index, poi in enumerate(pois[: max(1, min(int(limit), 20))], start=1):
+        name = poi.get("name", "未知地点")
+        poi_type = poi.get("type", "未知类型")
+        address = poi.get("address") or "地址未提供"
+        location = poi.get("location") or "坐标未知"
+        tel = poi.get("tel") or "电话未提供"
+        distance = poi.get("distance")
+        biz_ext = poi.get("biz_ext") or {}
+        rating = _poi_scalar(biz_ext.get("rating"), "暂无评分")
+        cost = _poi_scalar(biz_ext.get("cost"), "暂无人均")
+        opentime = _poi_scalar(biz_ext.get("opentime"), "营业时间未提供")
+        photos = poi.get("photos") or []
+        photo_url = ""
+        if photos and isinstance(photos[0], dict):
+            photo_url = photos[0].get("url") or ""
+
+        optional_parts = [
+            f"距离 {_format_km(distance)}" if distance else "",
+            f"评分 {rating}" if rating != "暂无评分" else "",
+            f"人均 {cost}元" if cost != "暂无人均" else "",
+            f"营业时间 {opentime}" if opentime != "营业时间未提供" else "",
+            f"照片 {photo_url}" if photo_url else "",
+        ]
+        optional_text = "；".join(part for part in optional_parts if part)
+        lines.append(
+            f"{index}. {name}；{poi_type}；{address}；坐标 {location}；电话 {tel}"
+            + (f"；{optional_text}" if optional_text else "")
+        )
+    return "\n".join(lines)
+
+
+def _amap_marker_url(location: str, name: str) -> str:
+    return f"https://uri.amap.com/marker?position={location}&name={requests.utils.quote(name)}"
 
 
 def _log_tool_start(name: str, **kwargs: object) -> float:
@@ -129,15 +305,8 @@ def get_weather_info(city: str, date: str = DEFAULT_DATE) -> str:
         qweather_host = _qweather_host()
         if qweather_key and qweather_host:
             try:
-                qweather_headers = {"X-QW-Api-Key": qweather_key}
-                geo_data = _request_json(
-                    f"https://{qweather_host}/geo/v2/city/lookup",
-                    {"location": city, "lang": "zh"},
-                    headers=qweather_headers,
-                )
-                locations = geo_data.get("location") or []
-                if locations:
-                    location = locations[0]
+                location = _qweather_lookup(city)
+                if location:
                     location_id = location["id"]
                     city_name = location.get("name", city)
                     adm1 = location.get("adm1", "")
@@ -145,13 +314,13 @@ def get_weather_info(city: str, date: str = DEFAULT_DATE) -> str:
                     now_data = _request_json(
                         f"https://{qweather_host}/v7/weather/now",
                         {"location": location_id, "lang": "zh", "unit": "m"},
-                        headers=qweather_headers,
+                        headers=_qweather_headers(),
                     )
                     now = now_data.get("now") or {}
                     daily_data = _request_json(
                         f"https://{qweather_host}/v7/weather/3d",
                         {"location": location_id, "lang": "zh", "unit": "m"},
-                        headers=qweather_headers,
+                        headers=_qweather_headers(),
                     )
                     daily_items = daily_data.get("daily") or []
                     daily = next((item for item in daily_items if item.get("fxDate") == date), None)
@@ -265,6 +434,122 @@ def get_weather_info(city: str, date: str = DEFAULT_DATE) -> str:
 
 
 @tool
+def get_air_quality_info(city: str) -> str:
+    """查询城市实时空气质量，用于判断是否适合户外步行、骑行、亲子或老人出行。
+
+    Args:
+        city: 城市名称，例如 "宁波"、"杭州"、"北京"。
+    """
+    start = _log_tool_start("get_air_quality_info", city=city)
+    try:
+        qweather_host = _qweather_host()
+        location = _qweather_lookup(city)
+        if not qweather_host or not location:
+            result = "空气质量查询不可用：未配置和风天气 Key/Host，或未找到城市。"
+            _log_tool_end("get_air_quality_info", start, result)
+            return result
+
+        air_data = _request_json(
+            f"https://{qweather_host}/v7/air/now",
+            {"location": location["id"], "lang": "zh"},
+            headers=_qweather_headers(),
+        )
+        now = air_data.get("now") or {}
+        if not now:
+            result = f"空气质量查询失败：和风天气未返回 {city} 的空气质量数据。"
+            _log_tool_end("get_air_quality_info", start, result)
+            return result
+
+        result = (
+            "数据源：和风天气空气质量\n"
+            f"城市：{location.get('name', city)}（{location.get('adm1', '')}{location.get('adm2', '')}）\n"
+            f"AQI：{now.get('aqi', '未知')}\n"
+            f"空气质量等级：{now.get('category', '未知')}\n"
+            f"首要污染物：{now.get('primary', '无或未知')}\n"
+            f"PM2.5：{now.get('pm2p5', '未知')} μg/m³\n"
+            f"PM10：{now.get('pm10', '未知')} μg/m³\n"
+            f"NO2：{now.get('no2', '未知')} μg/m³\n"
+            f"SO2：{now.get('so2', '未知')} μg/m³\n"
+            f"O3：{now.get('o3', '未知')} μg/m³\n"
+            f"CO：{now.get('co', '未知')} mg/m³"
+        )
+        _log_tool_end("get_air_quality_info", start, result)
+        return result
+    except requests.HTTPError as exc:
+        status_code = exc.response.status_code if exc.response is not None else ""
+        if status_code == 403:
+            result = "空气质量查询暂不可用：当前和风天气账号可能未开通空气质量 API 权限。"
+        else:
+            result = f"空气质量查询暂不可用：HTTP {status_code or '未知'}。"
+        _log_tool_end("get_air_quality_info", start, result)
+        return result
+    except Exception as exc:
+        result = f"空气质量查询暂不可用：{exc}"
+        _log_tool_end("get_air_quality_info", start, result)
+        return result
+
+
+@tool
+def get_weather_alerts(city: str) -> str:
+    """查询城市当前天气灾害预警，用于出行安全提醒。
+
+    Args:
+        city: 城市名称，例如 "宁波"、"杭州"、"北京"。
+    """
+    start = _log_tool_start("get_weather_alerts", city=city)
+    try:
+        qweather_host = _qweather_host()
+        location = _qweather_lookup(city)
+        if not qweather_host or not location:
+            result = "天气预警查询不可用：未配置和风天气 Key/Host，或未找到城市。"
+            _log_tool_end("get_weather_alerts", start, result)
+            return result
+
+        warning_data = _request_json(
+            f"https://{qweather_host}/v7/warning/now",
+            {"location": location["id"], "lang": "zh"},
+            headers=_qweather_headers(),
+        )
+        warnings = warning_data.get("warning") or []
+        if not warnings:
+            result = (
+                "数据源：和风天气灾害预警\n"
+                f"城市：{location.get('name', city)}（{location.get('adm1', '')}{location.get('adm2', '')}）\n"
+                "当前无正在生效的天气灾害预警。"
+            )
+            _log_tool_end("get_weather_alerts", start, result)
+            return result
+
+        lines = [
+            "数据源：和风天气灾害预警",
+            f"城市：{location.get('name', city)}（{location.get('adm1', '')}{location.get('adm2', '')}）",
+        ]
+        for index, warning in enumerate(warnings[:5], start=1):
+            lines.append(
+                f"{index}. {warning.get('title', '未知预警')}；"
+                f"等级：{warning.get('severityColor', warning.get('severity', '未知'))}；"
+                f"类型：{warning.get('typeName', '未知')}；"
+                f"发布时间：{warning.get('pubTime', '未知')}；"
+                f"说明：{warning.get('text', '无详细说明')}"
+            )
+        result = "\n".join(lines)
+        _log_tool_end("get_weather_alerts", start, result)
+        return result
+    except requests.HTTPError as exc:
+        status_code = exc.response.status_code if exc.response is not None else ""
+        if status_code == 403:
+            result = "天气预警查询暂不可用：当前和风天气账号可能未开通灾害预警 API 权限。"
+        else:
+            result = f"天气预警查询暂不可用：HTTP {status_code or '未知'}。"
+        _log_tool_end("get_weather_alerts", start, result)
+        return result
+    except Exception as exc:
+        result = f"天气预警查询暂不可用：{exc}"
+        _log_tool_end("get_weather_alerts", start, result)
+        return result
+
+
+@tool
 def calculate_trip_budget(
     city: str,
     days: int,
@@ -316,7 +601,10 @@ def calculate_trip_budget(
 
 @tool
 def get_transport_advice(origin: str, destination: str) -> str:
-    """根据出发地和目的地给出交通方式建议。"""
+    """获取出发地与目的地之间的驾车路线信息（距离、耗时、过路费），用于辅助交通决策。
+
+    注意：此工具只提供驾车路线数据，不包含火车票或高铁票信息。
+    如需查询火车票/高铁票的具体车次、时刻和余票，必须另外调用 search_train_tickets 工具。"""
     start = _log_tool_start("get_transport_advice", origin=origin, destination=destination)
     origin_info = _amap_location(origin)
     destination_info = _amap_location(destination)
@@ -371,6 +659,101 @@ def get_transport_advice(origin: str, destination: str) -> str:
 
 
 @tool
+def get_public_transit_plan(
+    origin: str,
+    destination: str,
+    origin_city: str = "",
+    destination_city: str = "",
+    limit: int = 3,
+) -> str:
+    """使用高德地图查询公交/地铁换乘方案，适合市内或邻近城市景点、车站、酒店之间的公共交通规划。
+    Args:
+        origin: 出发地点，例如 "杭州东站"、"西湖"。
+        destination: 到达地点，例如 "灵隐寺"、"武林广场"。
+        origin_city: 出发城市，可选；地点名称模糊时建议填写。
+        destination_city: 到达城市，可选；不填时默认使用出发城市或地理编码结果。
+        limit: 返回方案数量，建议 1-5。
+    """
+    start = _log_tool_start(
+        "get_public_transit_plan",
+        origin=origin,
+        destination=destination,
+        origin_city=origin_city,
+        destination_city=destination_city,
+        limit=limit,
+    )
+    key = _amap_key()
+    if not key:
+        result = "公共交通查询不可用：未配置 AMAP_API_KEY。"
+        _log_tool_end("get_public_transit_plan", start, result)
+        return result
+
+    try:
+        origin_info = _amap_geocode(origin, city=origin_city)
+        destination_info = _amap_geocode(destination, city=destination_city or origin_city)
+        if not origin_info or not destination_info:
+            result = f"公共交通查询失败：未能解析 {origin} 或 {destination} 的坐标。"
+            _log_tool_end("get_public_transit_plan", start, result)
+            return result
+
+        origin_location = origin_info.get("location", "")
+        destination_location = destination_info.get("location", "")
+        resolved_origin_city = _city_name_from_geocode(origin_info, origin_city)
+        resolved_destination_city = _city_name_from_geocode(destination_info, destination_city or resolved_origin_city)
+
+        data = _request_json(
+            f"{AMAP_BASE_URL}/direction/transit/integrated",
+            {
+                "key": key,
+                "origin": origin_location,
+                "destination": destination_location,
+                "city": resolved_origin_city,
+                "cityd": resolved_destination_city,
+                "strategy": 0,
+                "nightflag": 0,
+                "extensions": "base",
+                "output": "JSON",
+            },
+        )
+        route = data.get("route") or {}
+        transits = route.get("transits") or []
+        if data.get("status") != "1" or not transits:
+            result = (
+                f"未查询到 {origin} 到 {destination} 的公共交通方案。"
+                f"高德返回信息：{data.get('info', '无详细说明')}"
+            )
+            _log_tool_end("get_public_transit_plan", start, result)
+            return result
+
+        lines = [
+            "数据源：高德地图公交/地铁路线规划",
+            f"路线：{origin_info.get('formatted_address', origin)} → {destination_info.get('formatted_address', destination)}",
+            f"查询城市：{resolved_origin_city} → {resolved_destination_city}",
+        ]
+        for index, transit in enumerate(transits[: max(1, min(int(limit), 5))], start=1):
+            mode_label = _transit_mode_label(transit)
+            duration = _format_minutes(transit.get("duration", ""))
+            walking_distance = _format_km(transit.get("walking_distance", ""))
+            cost = _format_transit_cost(transit.get("cost", ""))
+            segments = [
+                _format_transit_segment(segment)
+                for segment in (transit.get("segments") or [])
+                if isinstance(segment, dict)
+            ]
+            segment_text = "；".join(segment for segment in segments if segment) or "换乘步骤未提供"
+            lines.append(
+                f"{index}. {mode_label}；预计耗时 {duration}；步行 {walking_distance}；费用 {cost}；路线：{segment_text}"
+            )
+        result = "\n".join(lines)
+        _log_tool_end("get_public_transit_plan", start, result)
+        return result
+    except Exception as exc:
+        result = f"公共交通查询异常：{exc}"
+        _log_tool_end("get_public_transit_plan", start, result)
+        return result
+
+
+@tool
 def search_travel_pois(city: str, keyword: str = "景点", limit: int = 8) -> str:
     """使用高德地图搜索目的地的景点、餐饮、商圈、酒店等 POI，用于生成更真实的行程推荐。
 
@@ -396,7 +779,7 @@ def search_travel_pois(city: str, keyword: str = "景点", limit: int = 8) -> st
                 "citylimit": "true",
                 "offset": max(1, min(int(limit), 20)),
                 "page": 1,
-                "extensions": "base",
+                "extensions": "all",
                 "output": "JSON",
             },
         )
@@ -413,13 +796,104 @@ def search_travel_pois(city: str, keyword: str = "景点", limit: int = 8) -> st
             address = poi.get("address") or "地址未提供"
             location = poi.get("location") or "坐标未知"
             tel = poi.get("tel") or "电话未提供"
-            lines.append(f"{index}. {name}｜{poi_type}｜{address}｜坐标 {location}｜{tel}")
+            biz_ext = poi.get("biz_ext") or {}
+            rating = _poi_scalar(biz_ext.get("rating"), "暂无评分")
+            cost = _poi_scalar(biz_ext.get("cost"), "暂无人均")
+            opentime = _poi_scalar(biz_ext.get("opentime"), "营业时间未提供")
+            photos = poi.get("photos") or []
+            photo_url = ""
+            if photos and isinstance(photos[0], dict):
+                photo_url = photos[0].get("url") or ""
+            optional_parts = [
+                f"评分 {rating}" if rating != "暂无评分" else "",
+                f"人均 {cost}元" if cost != "暂无人均" else "",
+                f"营业时间 {opentime}" if opentime != "营业时间未提供" else "",
+                f"照片 {photo_url}" if photo_url else "",
+            ]
+            optional_text = "｜".join(part for part in optional_parts if part)
+            lines.append(
+                f"{index}. {name}｜{poi_type}｜{address}｜坐标 {location}｜电话 {tel}"
+                + (f"｜{optional_text}" if optional_text else "")
+            )
         result = "\n".join(lines)
         _log_tool_end("search_travel_pois", start, result)
         return result
     except Exception as exc:
         result = f"POI 查询异常：{exc}"
         _log_tool_end("search_travel_pois", start, result)
+        return result
+
+
+@tool
+def search_nearby_pois(
+    place: str,
+    city: str = "",
+    keyword: str = "餐饮",
+    radius: int = 1500,
+    limit: int = 8,
+) -> str:
+    """使用高德地图周边搜索查询某个景点、车站、酒店附近的餐饮、住宿、商圈或景点。
+    Args:
+        place: 中心地点，例如 "西湖"、"杭州东站"、"灵隐寺"。
+        city: 中心地点所在城市，可选；地点名称模糊时建议填写。
+        keyword: 周边搜索关键词，例如 "餐饮"、"酒店"、"咖啡"、"景点"、"地铁站"。
+        radius: 搜索半径，单位米，建议 500-5000。
+        limit: 返回结果数量，建议 3-10。
+    """
+    start = _log_tool_start(
+        "search_nearby_pois",
+        place=place,
+        city=city,
+        keyword=keyword,
+        radius=radius,
+        limit=limit,
+    )
+    key = _amap_key()
+    if not key:
+        result = "周边 POI 查询不可用：未配置 AMAP_API_KEY。"
+        _log_tool_end("search_nearby_pois", start, result)
+        return result
+
+    try:
+        center_info = _amap_geocode(place, city=city)
+        if not center_info or not center_info.get("location"):
+            result = f"周边 POI 查询失败：未能解析中心地点 {place}。"
+            _log_tool_end("search_nearby_pois", start, result)
+            return result
+
+        safe_radius = max(100, min(int(radius), 50000))
+        data = _request_json(
+            f"{AMAP_BASE_URL}/place/around",
+            {
+                "key": key,
+                "location": center_info["location"],
+                "keywords": keyword,
+                "radius": safe_radius,
+                "offset": max(1, min(int(limit), 20)),
+                "page": 1,
+                "extensions": "all",
+                "output": "JSON",
+            },
+        )
+        pois = data.get("pois") or []
+        if data.get("status") != "1" or not pois:
+            result = (
+                f"未在 {place} 周边 {safe_radius} 米内找到与“{keyword}”相关的 POI。"
+                f"高德返回信息：{data.get('info', '无详细说明')}"
+            )
+            _log_tool_end("search_nearby_pois", start, result)
+            return result
+
+        title = (
+            f"{center_info.get('formatted_address', place)} 周边 {safe_radius} 米"
+            f"“{keyword}”推荐："
+        )
+        result = _format_poi_lines(title, pois, limit)
+        _log_tool_end("search_nearby_pois", start, result)
+        return result
+    except Exception as exc:
+        result = f"周边 POI 查询异常：{exc}"
+        _log_tool_end("search_nearby_pois", start, result)
         return result
 
 
@@ -444,10 +918,42 @@ def get_place_location(place: str, city: str = "") -> str:
     return result
 
 
+@tool
+def get_map_marker_link(place: str, city: str = "") -> str:
+    """生成高德地图地点标记链接，不暴露 API Key，适合在最终方案中给用户点击打开地点。
+
+    Args:
+        place: 地点名称，例如 "天一阁·月湖"、"宁波大学"。
+        city: 地点所在城市，可选；地点名称模糊时建议填写。
+    """
+    start = _log_tool_start("get_map_marker_link", place=place, city=city)
+    info = _amap_geocode(place, city=city)
+    if not info or not info.get("location"):
+        result = f"地图链接生成失败：未找到 {place} 的坐标。"
+        _log_tool_end("get_map_marker_link", start, result)
+        return result
+    address = info.get("formatted_address") or place
+    url = _amap_marker_url(info["location"], place)
+    result = (
+        "数据源：高德地图 URI\n"
+        f"地点：{place}\n"
+        f"标准地址：{address}\n"
+        f"经纬度：{info.get('location', '未知')}\n"
+        f"地图链接：{url}"
+    )
+    _log_tool_end("get_map_marker_link", start, result)
+    return result
+
+
 TRAVEL_TOOLS = [
     get_weather_info,
+    get_air_quality_info,
+    get_weather_alerts,
     calculate_trip_budget,
     get_transport_advice,
+    get_public_transit_plan,
     search_travel_pois,
+    search_nearby_pois,
     get_place_location,
+    get_map_marker_link,
 ]

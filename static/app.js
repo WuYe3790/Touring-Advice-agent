@@ -10,6 +10,7 @@ const thinkingModelName = document.querySelector("#thinkingModelName");
 const keyStatus = document.querySelector("#keyStatus");
 const amapStatus = document.querySelector("#amapStatus");
 const qweatherStatus = document.querySelector("#qweatherStatus");
+const trainStatus = document.querySelector("#trainStatus");
 const conversationListEl = document.querySelector("#conversationList");
 const newChatBtn = document.querySelector("#newChatBtn");
 const CURRENT_CONVERSATION_KEY = "travel_agent_current_conversation_id";
@@ -594,12 +595,14 @@ async function loadStatus() {
         ? (data.qweather_host_loaded ? "已配置" : "缺少 Host")
         : "未配置";
     }
+    if (trainStatus) trainStatus.textContent = data.train_tools_available ? "可用" : "未检测到";
   } catch {
     modelName.textContent = "读取失败";
     thinkingModelName.textContent = "读取失败";
     keyStatus.textContent = "未知";
     if (amapStatus) amapStatus.textContent = "未知";
     if (qweatherStatus) qweatherStatus.textContent = "未知";
+    if (trainStatus) trainStatus.textContent = "未知";
   }
 }
 
@@ -871,6 +874,7 @@ function renderPoiCards(categories) {
         <span class="poi-card-type">${escapeHtml(item.type || "")}</span>
         <h4 class="poi-card-name">${escapeHtml(item.name || "")}</h4>
         ${item.address ? `<p class="poi-card-address">${escapeHtml(item.address)}</p>` : ""}
+        ${renderPoiMeta(item)}
       </div>
     `).join("");
     return `
@@ -881,4 +885,20 @@ function renderPoiCards(categories) {
     `;
   }).join("");
   return `<div class="card-section"><h3 class="card-section-title">地点推荐</h3><div class="poi-categories">${sections}</div></div>`;
+}
+
+function renderPoiMeta(item) {
+  const chips = [];
+  if (item.rating) chips.push(`评分 ${item.rating}`);
+  if (item.cost) chips.push(`人均 ${item.cost}`);
+  if (item.tel) chips.push(item.tel);
+  if (item.location) chips.push(item.location);
+  if (!chips.length && !item.photo_url && !item.map_url) return "";
+  return `
+    <div class="poi-card-meta">
+      ${chips.map(chip => `<span>${escapeHtml(String(chip))}</span>`).join("")}
+      ${item.map_url ? `<a href="${escapeHtml(item.map_url)}" target="_blank" rel="noreferrer">地图</a>` : ""}
+      ${item.photo_url ? `<a href="${escapeHtml(item.photo_url)}" target="_blank" rel="noreferrer">图片</a>` : ""}
+    </div>
+  `;
 }

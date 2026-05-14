@@ -10,8 +10,7 @@
 
 当前服务状态：
 
-- Flask 服务已手动停止，`127.0.0.1:5000` 当前不应再有项目进程监听。
-- 下次启动仍使用：
+- Flask 服务可能仍在运行，若 `127.0.0.1:5000` 无响应，用以下命令启动：
 
 ```powershell
 C:\Users\BaoXinJie\anaconda3\python.exe app.py
@@ -45,18 +44,43 @@ C:\Users\BaoXinJie\anaconda3\python.exe app.py
    - 支持前端“停止”当前请求
    - 支持导出 Agent 执行报告 JSON
 
-4. **Phase 3 基础版：真实数据源工具**
+4. **Phase 3 完整版：POI 结构化与真实火车票**
    - 高德地图：地理编码、POI 搜索、驾车路线、距离/耗时/过路费估算、天气回退
-   - 和风天气：已支持专属 Host 鉴权方式，配置齐全后优先使用
+   - 和风天气：已支持专属 Host 鉴权方式，配置齐全后优先使用；已验证可用
    - Open-Meteo：作为最终天气回退
-   - Agent 提示词已要求在具体旅行规划中优先调用真实 POI、路线和天气工具
+   - **POI 结构化卡片**（2026-05-14 完成）：Agent 提示词要求至少调用 3 次 search_travel_pois（景点/餐饮/商圈），结果填入 structured JSON `poi_recommendations` 字段，前端渲染为分类 POI 推荐卡片网格
+   - **12306 火车票查询**（2026-05-14 完成）：接入第三方 [12306-mcp](https://github.com/Joooook/12306-mcp.git) MCP Server，通过自写 Python MCP stdio 客户端跨进程通信。新增 `search_train_tickets`（余票查询，支持高铁/动车/普速筛选）和 `get_train_route`（车次经停站）两个 LangChain 工具。零新增 Python 依赖，Node.js 不可用时自动降级
+   - Agent 提示词已要求在跨城出行时必须调用 search_train_tickets 获取真实车次数据，不得凭通用建议编造
+
+2026-05-14 下午复查与修复：
+
+- 修复 DeepSeek 接手后留下的 12306 阻塞风险：原实现会在 `build_agent()` 时启动 `npx 12306-mcp`，导致任意普通请求都可能被 MCP 下载或初始化卡住。现在只检测 `npx` 是否存在并注册工具，真正调用 `search_train_tickets` / `get_train_route` 时才启动 MCP。
+- 修复 MCP stdout 读取可能无限阻塞的问题：改为后台线程读取 stdout + queue 超时等待，请求超时会返回明确错误。
+- MCP 子进程异常退出后，下次工具调用会重新尝试连接，不再永久持有失效客户端。
+- 高德 POI 查询已从 `extensions=base` 升级为 `extensions=all`，工具会尽量返回评分、人均、营业时间、照片链接等扩展字段。
+- 前端 POI 卡片已支持展示 `rating`、`cost`、`tel`、`location`、`photo_url` 等可选信息。
+- 运行状态面板新增 `12306` 状态，显示本机是否检测到 Node/npx。
+
+2026-05-14 Phase 3 继续完善：
+
+- 新增 `get_public_transit_plan` 工具：基于高德 `/direction/transit/integrated` 查询公交/地铁换乘方案，可返回耗时、步行距离、费用和主要换乘线路。适合车站到酒店、酒店到景点、景点到景点等城市内移动场景。
+- 新增 `search_nearby_pois` 工具：基于高德 `/place/around` 按中心地点和半径查询周边 POI，可用于“西湖附近餐饮”“杭州东站附近酒店”“景点附近地铁站”等更精确的推荐。
+- Agent 提示词已更新：城市内移动优先调用 `get_public_transit_plan`；地点周边推荐优先调用 `search_nearby_pois`；全城级目的地推荐继续使用 `search_travel_pois`。
+- 已完成工具级烟测：`杭州东站 -> 西湖` 可返回地铁换乘方案；`西湖` 周边餐饮可返回距离、评分、人均和照片链接。
+- 当前不需要额外申请新 API；这两个能力复用现有高德地图 Web 服务 Key。
+- 新增 `get_air_quality_info` 和 `get_weather_alerts`：复用和风天气 Host/Key 查询空气质量和灾害预警。当前本地和风账号对这两个接口返回 403，工具已做成“暂不可用”降级，不会把 Agent 流程标成失败。
+- 新增 `get_map_marker_link`：生成无 Key 泄露风险的高德地图 URI 标记链接，前端 POI 卡片支持渲染 `map_url`。
+- 新增 `search_interline_train_tickets`：封装 12306-MCP 的 `get-interline-tickets` 中转余票查询，已通过 `宁波 -> 张家界` 中转方案烟测。
 
 建议下一位接手者优先做：
 
-- 验证和风天气 Host 是否可用：调用 `get_weather_info("杭州")`，确认输出数据源为“和风天气”。
-- 做 Phase 3 完整版：把高德 POI 结果进一步结构化，让前端渲染“景点/餐饮/商圈推荐卡片”。
-- 接入 12306-MCP 作为可选本地火车票查询工具，但不要把它做成必需依赖。
-- 补充 pytest 测试，尤其是工具层 mock 测试、SSE 离线模式测试和 SQLite 持久化测试。
+- 补充 pytest 测试：工具层 mock 测试（天气/POI/火车票）、SSE 离线模式测试、SQLite 持久化测试、train_tools MCP 客户端 mock 测试。
+- 继续增强 POI 体验：增加排序/筛选、按行程日关联推荐、嵌入高德静态地图。
+- 公交/地铁路线规划已完成基础接入：后续可继续增强换乘排序、首末班时间解释和步行距离偏好。
+- 高德周边搜索已完成基础接入：后续可继续增强排序/筛选、按行程日关联推荐和静态地图展示。
+- 和风天气增强：空气质量和天气预警工具已接入；若账号开通对应权限即可返回真实数据。
+- 前端 POI 卡片继续增加排序/筛选功能，并嵌入高德静态地图。
+- 12306 中转查询已完成；后续可做前端中转方案卡片展示。
 
 ## 当前状态
 
@@ -66,7 +90,7 @@ C:\Users\BaoXinJie\anaconda3\python.exe app.py
 - DeepSeek OpenAI-compatible API 接入
 - 普通模式使用 `deepseek-v4-flash`
 - 深度思考模式使用 `deepseek-v4-pro`
-- 天气查询、预算计算、交通建议 3 个外部工具
+- 天气、空气质量、天气预警、预算、驾车路线、公交/地铁、POI、地图链接和 12306 等 13 个工具
 - Flask Web 聊天界面
 - Markdown 渲染为标题、列表、表格
 - SQLite 服务端历史会话持久化
@@ -78,8 +102,11 @@ C:\Users\BaoXinJie\anaconda3\python.exe app.py
 - 支持导出 Agent 执行报告 JSON
 - 每轮回复保存模型、模式、耗时和 trace 元数据
 - 高德地图真实数据源：地点解析、POI 搜索、驾车路线、距离/耗时/费用估算、天气回退
-- 和风天气真实数据源：支持 API Key + 专属 API Host 鉴权方式，优先查询实时天气和 3 日预报
-- **结构化 JSON 输出 + 前端卡片渲染**（v2.0 新增）：Agent 在 Markdown 末尾输出 JSON 代码块，后端提取为 `structured_data`，前端渲染为天气卡片、每日行程时间轴、交通方案卡、预算明细卡和出行提示列表；原始 JSON 不直接展示给用户
+- 和风天气真实数据源：支持 API Key + 专属 API Host 鉴权方式，优先查询实时天气和 3 日预报；已验证可用
+- **结构化 JSON 输出 + 前端卡片渲染**（Phase 1）：Agent 在 Markdown 末尾输出 JSON 代码块，后端提取为 `structured_data`，前端渲染为天气卡片、每日行程时间轴、交通方案卡、预算明细卡和出行提示列表；原始 JSON 不直接展示给用户
+- **POI 推荐卡片**（Phase 3）：Agent 至少调用 3 次 `search_travel_pois`（景点/餐饮/商圈），结果填入 `poi_recommendations` 字段，前端渲染为分类 POI 推荐卡片网格（类型标签 + 名称 + 地址 + 可选评分/人均/电话/坐标/图片）
+- **12306 火车票查询**（Phase 3）：接入第三方 12306-mcp MCP Server（Node.js），通过自写 Python MCP stdio 客户端跨进程通信。新增 `search_train_tickets`、`search_interline_train_tickets` 和 `get_train_route` 三个 LangChain 工具，支持余票查询、中转方案和经停站时刻表。零新增 Python 依赖，Node.js 不可用时自动降级。Agent 跨城出行时必须调用该工具获取真实车次数据。当前已修复为“工具调用时懒启动 MCP”，避免普通请求被 12306 初始化拖慢
+- 当前共 13 个 LangChain 工具：天气、空气质量、天气预警、预算、驾车路线、公交/地铁换乘、全城 POI 搜索、周边 POI 搜索、地点解析、地图链接、火车票查询、火车中转查询、列车经停站
 
 当前适合：
 
@@ -145,7 +172,8 @@ C:\Users\BaoXinJie\anaconda3\python.exe app.py
         ├── cli.py                 # CLI 参数解析
         ├── config.py              # .env 配置读取
         ├── storage.py             # SQLite 会话和消息持久化
-        └── tools.py               # 天气、预算、交通、POI、地点解析工具
+        ├── tools.py               # 天气、预算、交通、POI、地点解析工具
+        └── train_tools.py         # 12306 火车票 MCP 客户端及 LangChain 工具（可选）
 ```
 
 ## 环境配置
@@ -223,6 +251,7 @@ C:\Users\BaoXinJie\anaconda3\python.exe run.py --offline-demo -q "我明天从�
 页面包含：
 
 - 左侧运行状态：普通模型、思考模型、API Key 状态
+- 左侧数据源状态：高德地图、和风天气、12306 运行环境
 - 左侧历史会话：新建、切换、删除
 - 主聊天区：用户输入和助手回复
 - 输入区开关：深度思考、离线演示
@@ -252,15 +281,23 @@ flowchart TD
     C --> D["DeepSeek LLM 理解需求"]
     D --> E{"是否需要工具"}
     E --> F["get_weather_info 天气查询"]
-    E --> G["get_transport_advice 交通建议"]
+    E --> G["get_transport_advice 驾车路线"]
     E --> H["calculate_trip_budget 预算计算"]
+    E --> Q["get_public_transit_plan 公交/地铁换乘"]
     E --> M["search_travel_pois POI搜索"]
+    E --> R["search_nearby_pois 周边POI搜索"]
     E --> N["get_place_location 地点解析"]
+    E --> O["search_train_tickets 12306火车票"]
+    E --> P["get_train_route 列车经停站"]
     F --> I["工具结果返回 Agent"]
     G --> I
     H --> I
+    Q --> I
     M --> I
+    R --> I
     N --> I
+    O --> I
+    P --> I
     I --> J["DeepSeek LLM 汇总规划"]
     J --> K["SSE 流式返回阶段事件和最终答案"]
     K --> L["前端实时展示执行过程"]
@@ -290,15 +327,37 @@ flowchart TD
 
 ### `src/travel_agent/tools.py`
 
-当前工具：
+当前 10 个核心工具：
 
-- `get_weather_info(city, date)`：优先调用和风天气；未配置和风 API Host 时使用高德天气；再失败时回退 Open-Meteo
-- `get_transport_advice(origin, destination)`：优先调用高德地图解析路线距离、驾车耗时和费用估算；失败时生成通用交通建议
+- `get_weather_info(city, date)`：优先调用和风天气（API Key + Host 鉴权）；未配置和风 Host 时使用高德天气；再失败时回退 Open-Meteo
+- `get_air_quality_info(city)`：和风空气质量查询；当前账号未开通时会返回“暂不可用”而非阻断流程
+- `get_weather_alerts(city)`：和风天气灾害预警查询；当前账号未开通时会返回“暂不可用”而非阻断流程
+- `get_transport_advice(origin, destination)`：仅提供**驾车路线**数据（高德地图：距离、耗时、过路费估算）。注意：此工具不包含火车票信息，火车票必须使用 `search_train_tickets`
+- `get_public_transit_plan(origin, destination, origin_city, destination_city, limit)`：调用高德地图查询公交/地铁换乘方案，返回耗时、步行距离、费用和主要线路
 - `calculate_trip_budget(...)`：按人数、天数、酒店、餐饮、门票计算预算
 - `search_travel_pois(city, keyword, limit)`：调用高德地图搜索景点、餐饮、商圈、酒店等 POI
+- `search_nearby_pois(place, city, keyword, radius, limit)`：调用高德地图周边搜索，围绕景点、车站或酒店按半径查询餐饮、住宿、地铁站等 POI
 - `get_place_location(place, city)`：调用高德地图核验地点地址和经纬度
+- `get_map_marker_link(place, city)`：生成高德地图地点标记 URI，不暴露 API Key
 
 工具会在控制台输出调用日志，便于实验展示和调试。
+
+### `src/travel_agent/train_tools.py`
+
+12306 火车票查询（可选工具，需 Node.js + npx）：
+
+- `_McpClient` 类：自写 Python MCP stdio 客户端。通过 `subprocess.Popen` 启动 `npx 12306-mcp`，JSON-RPC over stdin/stdout 通信。含子进程生命周期管理、stderr 后台排空、初始化握手
+- `search_train_tickets(date, from_city, to_city, train_filter_flags, limit)`：查询 12306 余票，返回车次号、出发/到达时刻、历时、各座型余票和票价。支持按高铁(G)/动车(D)/普速等筛选
+- `get_train_route(train_code, date)`：查询特定车次的详细经停站和时刻表
+
+设计要点：
+
+- **可选依赖**：`get_train_tools()` 检测 npx 可用性；Node.js 不可用时返回空列表，不阻塞 Agent 启动
+- **零新增 Python 依赖**：仅用 `subprocess` + `json` + `shutil` + `threading` + `queue` 标准库
+- `search_interline_train_tickets(date, from_city, to_city, middle_city, train_filter_flags, limit)`：查询 12306 中转余票方案
+- 工具列表动态组合：`build_agent` 中 `TRAVEL_TOOLS + get_train_tools()` → 最多 13 个工具
+- **懒启动 MCP**：`get_train_tools()` 只检测 `npx` 并注册工具，不启动 `12306-mcp`；真正调用火车票工具时才启动 MCP，避免普通问题被 12306 初始化拖慢
+- **超时保护**：MCP stdout 使用后台线程 + queue 等待，避免阻塞式 `readline()` 无限卡住
 
 ### `src/travel_agent/storage.py`
 
@@ -446,6 +505,8 @@ extra_body={"thinking": {"type": "disabled"}}
 5. 天气工具优先使用和风天气；如果和风配置不可用，会回退高德天气；再失败才回退 Open-Meteo。没网或接口失败时会返回异常文本，Agent 会继续整合结果。
 6. 当前 Flask 是开发服务器，只适合本地演示，不是生产部署。
 7. 高德地图和和风天气都有额度限制，演示时避免高频反复刷新真实请求。
+8. 12306 火车票工具需要本机安装 Node.js（`npx` 可用）。首次真正调用火车票工具时 npx 会自动下载或启动 12306-mcp 包（需网络），启动可能较慢。Node.js 不可用时 Agent 自动降级为 10 个核心工具模式，不影响其他功能。
+9. `get_transport_advice` 仅提供驾车路线数据，不包含火车票信息。跨城火车票必须通过 `search_train_tickets` 获取。
 
 ## 常用验证命令
 
@@ -475,63 +536,29 @@ C:\Users\BaoXinJie\anaconda3\python.exe -c "from web import app; c=app.test_clie
 
 ## 后续优化路线
 
-### 1. 结构化输出与前端卡片渲染
+### 1. 结构化输出增强
 
-当前已完成 Phase 1：模型输出 JSON，后端提取 `structured_data`，前端渲染基础卡片。下一步适合继续增强为更稳定的结构化输出系统，例如增加 Schema 校验、字段容错、卡片交互和更丰富的产品化布局。
+当前已完成：LLM 输出 JSON → 后端提取 → 前端渲染 6 类卡片（摘要、天气、交通、每日行程、预算、提示、POI 推荐）。后续可增强：
+- JSON Schema 严格校验（如 pydantic），字段容错
+- 卡片交互：展开/折叠每日详情、切换排序
+- POI 卡片增加评分、照片 URL（需 extensions: all）
 
-建议结构：
+### 2. Agent 运行时间轴增强
 
-```json
-{
-  "summary": "...",
-  "weather": [],
-  "transport_options": [],
-  "daily_itinerary": [],
-  "budget": {},
-  "tips": []
-}
-```
-
-可以渲染为：
-
-- 天气卡片
-- 每日行程时间轴
-- 交通方案对比
-- 预算明细卡
-- 注意事项列表
-
-这是最适合继续打磨简历项目的方向，因为它能体现“LLM 结构化输出 + 前端工程化渲染”。
-
-### 2. 更完整的 Agent 运行时间轴
-
-当前已完成 Phase 2 的基础版本：流式 trace 已增强为可观察的运行时间轴：
-
-- 每一步开始时间、结束时间、耗时
-- 工具状态：运行中、成功、异常
-- 错误步骤高亮
-- 支持用户中断当前生成任务
-- 支持导出 Agent 运行报告
-
-后续还可以继续扩展为更专业的观测面板，例如给每个步骤分配稳定 step id、展示更细的 LLM 首 token 时间、保存用户主动中断记录、支持 Markdown/PDF 版运行报告。
+当前已完成：流式 trace、运行中展开/完成折叠、状态标记、耗时、异常高亮、停止请求、导出 JSON 报告。后续可扩展：
+- 每个步骤稳定 step id，展示 LLM 首 token 时间
+- 支持 Markdown / PDF 版运行报告
+- 保存用户主动中断记录
 
 ### 3. 更多工具
 
-当前已经完成真实数据源基础版：
-
-- 景点/POI 推荐：高德地图 `search_travel_pois`
-- 地图距离和通勤时间：高德地图 `get_transport_advice`
-- 地点解析：高德地图 `get_place_location`
-- 天气：和风天气优先，高德天气和 Open-Meteo 回退
-
-后续可继续扩展：
-
-- 12306-MCP 火车票查询
-- 节假日判断
-- 汇率工具
-- 酒店/餐饮 mock 数据
+当前共 13 个工具（10 核心 + 3 火车票），全部接入真实 API 或真实 API 降级路径。后续可扩展：
+- 高德公交/地铁路线规划增强：换乘排序、首末班时间解释、步行距离偏好
+- 高德周边搜索增强：按评分/距离/人均筛选，结合每天行程自动推荐附近餐饮
+- 和风天气空气质量/天气预警账号权限开通后验证真实返回
+- 12306 中转查询前端卡片化展示
+- 节假日判断、汇率工具、酒店/餐饮 mock 数据
 - 本地旅行知识库 RAG
-
-即使不接真实付费酒店/机票 API，也可以先设计接口和 mock 数据。
 
 ### 4. 用户偏好系统
 
@@ -568,15 +595,15 @@ Agent 根据偏好调整路线和推荐。
 
 可以写成：
 
-> 基于 LangChain 和 DeepSeek 的智能旅行规划 Agent，支持多轮对话、工具调用、天气查询、预算计算、交通建议、真实 POI 检索和流式执行过程可视化。系统使用 Flask 提供 Web 交互界面，通过 SSE 实时展示 Agent 的工具调用阶段，并用 SQLite 持久化历史会话和每轮 trace。项目接入高德地图和和风天气，支持地点解析、路线距离、景点/餐饮 POI 搜索和实时天气查询；同时新增结构化 JSON 输出，前端渲染为天气卡片、行程时间轴、交通方案卡、预算明细卡和出行提示列表，实现从 LLM 文本到产品化 UI 卡片的完整链路。项目支持普通模式与深度规划模式切换，完整体现”需求理解、任务拆解、工具调用、结果汇总”的智能体工作流。
+> 基于 LangChain 和 DeepSeek 的智能旅行规划 Agent，支持多轮对话、13 个外部工具调用（天气、空气质量、天气预警、预算、驾车路线、公交/地铁换乘、全城 POI 搜索、周边 POI 搜索、地点解析、地图链接、12306 火车票查询、火车中转查询、列车经停站），以及流式执行过程可视化。系统使用 Flask 提供 Web 交互界面，通过 SSE 实时展示 Agent 的工具调用阶段和耗时，并用 SQLite 持久化历史会话。项目接入高德地图、和风天气和 12306，支持地点解析、路线距离、市内公共交通换乘、景点/餐饮/商圈 POI 搜索、周边餐饮/酒店推荐、实时天气查询、空气质量/天气预警降级查询、地图标记链接和真实火车票/中转余票查询。JSON 结构化输出前端渲染为 6 类卡片（天气、每日行程、交通方案、预算明细、出行提示、POI 推荐分类网格），实现从 LLM 文本到产品化 UI 卡片的完整链路。12306 通过自写 MCP stdio 客户端跨进程接入 Node.js MCP Server，零新增依赖且支持自动降级。支持普通模式与深度规划模式切换，完整体现”需求理解、任务拆解、工具调用、结果汇总”的智能体工作流。
 
 ## 建议接手顺序
 
 1. 先阅读 `src/travel_agent/agent.py`，理解 Agent、提示词、trace、流式事件产出，以及 **JSON 提取函数**（`extract_structured_json` / `strip_structured_json` / `_find_json_fence_pairs`）。
 2. 再阅读 `web.py`，理解 `/api/chat/stream` 如何保存消息、转发 `structured_data` 并流式返回。
-3. 再阅读 `static/app.js`，理解前端 SSE 解析、Markdown 渲染以及 **卡片渲染函数**（`renderStructuredCardsInto` / `renderWeatherCards` / `renderItineraryTimeline` 等）。
-4. 再阅读 `storage.py` 和 `tools.py`，理解持久化和工具实现。
-5. Phase 1、Phase 2 和 Phase 3 真实数据源基础版已经完成。下一步优先验证和风天气 Host，然后继续做 **12306-MCP 火车票查询工具** 或 **POI 推荐卡片增强**。
+3. 再阅读 `static/app.js`，理解前端 SSE 解析、Markdown 渲染以及 **卡片渲染函数**（`renderStructuredCardsInto` / `renderWeatherCards` / `renderPoiCards` 等）。
+4. 再阅读 `storage.py`、`tools.py` 和 `train_tools.py`，理解持久化、10 个核心工具实现、以及 12306 MCP 客户端架构。
+5. Phase 1（结构化卡片）、Phase 2（流式 trace）、Phase 3（POI 卡片 + 12306 火车票/中转 + 公交/地铁换乘 + 周边 POI + 地图链接 + 天气增强降级）已完成。下一步优先补充 pytest 测试、增加 POI 排序筛选和地图链接卡片化展示。
 
 ## v2.0 结构化输出系统说明（Phase 1 已完成）
 
@@ -643,3 +670,40 @@ LLM 回答末尾的 ```json 代码块
 - LLM 未产出 JSON 或 JSON 不合法 → `extract_structured_json` 返回 `None`，前端不渲染卡片，回退到纯 Markdown
 - 历史消息 `meta_json` 没有 `structured_data` → 不渲染卡片
 - 离线演示模式同样产出 JSON，卡片正常渲染
+
+## Phase 3 完整版交付总结（2026-05-14）
+
+本阶段在 Phase 3 基础版（高德 + 和风天气真实数据源）之上完成了两项核心增强：
+
+### POI 结构化推荐卡片
+
+- **后端**：Agent 提示词要求至少调用 3 次 `search_travel_pois`（景点、餐饮/本地菜、商圈/购物），结果按类别填入 structured JSON 的 `poi_recommendations` 字段
+- **前端**：新增 `renderPoiCards()` 函数，按类别分组渲染 POI 推荐卡片网格（类型标签 + 名称 + 地址 + 可选评分/人均/电话/坐标/图片），CSS 含响应式网格和 hover 效果
+- **离线演示**：`run_offline_demo` 包含杭州 3 类共 10 个 POI 示例数据
+
+### 12306 火车票查询
+
+- **新文件** `src/travel_agent/train_tools.py`（~150 行）：
+  - `_McpClient` — 自写 Python MCP stdio 客户端，通过 subprocess 启动 `npx 12306-mcp`，JSON-RPC over stdin/stdout 通信，含 stdout/stderr 后台排空、超时等待和生命周期管理
+  - `search_train_tickets` — LangChain 工具，查询余票（车次、时刻、历时、座型余票/票价），支持 G/D/Z/T/K 等车次筛选
+  - `get_train_route` — LangChain 工具，查询特定车次经停站和时刻表
+- **零新增 Python 依赖**，仅用标准库；Node.js 不可用时自动降级为 10 个核心工具模式；MCP 仅在火车票工具被调用时懒启动
+- **关键坑修复**：`get_transport_advice` 描述收紧为"仅驾车路线"，提示词要求跨城时必须调用 `search_train_tickets`，防止 LLM 凭通用建议编造火车信息。Popen 需用 `shutil.which` 全路径 + `encoding="utf-8"` 解决 Windows 兼容
+
+### 当前完整工具集（13 个）
+
+| 工具 | 数据源 | 说明 |
+|---|---|---|
+| `get_weather_info` | 和风 > 高德 > Open-Meteo | 三层回退 |
+| `get_air_quality_info` | 和风空气质量 | 权限未开通时降级 |
+| `get_weather_alerts` | 和风灾害预警 | 权限未开通时降级 |
+| `get_transport_advice` | 高德驾车路线 | 仅驾车 |
+| `get_public_transit_plan` | 高德公交/地铁路线 | 市内换乘 |
+| `calculate_trip_budget` | 本地计算 | — |
+| `search_travel_pois` | 高德 POI | 景点/餐饮/商圈/酒店 |
+| `search_nearby_pois` | 高德周边 POI | 围绕地点半径搜索 |
+| `get_place_location` | 高德地理编码 | 地址核验 |
+| `get_map_marker_link` | 高德 URI | 无 Key 地图链接 |
+| `search_train_tickets` | 12306（via MCP） | 可选 |
+| `search_interline_train_tickets` | 12306（via MCP） | 可选，中转查询 |
+| `get_train_route` | 12306（via MCP） | 可选 |

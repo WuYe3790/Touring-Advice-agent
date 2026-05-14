@@ -23,6 +23,7 @@ from travel_agent.agent import (  # noqa: E402
     strip_structured_json,
 )
 from travel_agent.config import load_llm_config  # noqa: E402
+from travel_agent.train_tools import is_train_tools_available  # noqa: E402
 from travel_agent.storage import (  # noqa: E402
     add_message,
     create_conversation,
@@ -77,6 +78,7 @@ def status():
             "amap_key_loaded": bool(os.getenv("AMAP_API_KEY", "").strip()),
             "qweather_key_loaded": bool(os.getenv("QWEATHER_API_KEY", "").strip()),
             "qweather_host_loaded": bool(os.getenv("QWEATHER_API_HOST", "").strip()),
+            "train_tools_available": is_train_tools_available(),
         }
     )
 
