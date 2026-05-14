@@ -1,0 +1,87 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>LangChain 旅游规划智能体</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}">
+</head>
+<body>
+  <div class="bg-grid"></div>
+  <main class="app-shell">
+    <aside class="sidebar">
+      <div class="brand">
+        <div class="brand-mark">旅</div>
+        <div>
+          <h1>旅游规划智能体</h1>
+          <p>LangChain + DeepSeek + 外部工具</p>
+        </div>
+      </div>
+
+      <section class="status-panel">
+        <h2>运行状态</h2>
+        <div class="status-row">
+          <span>模型</span>
+          <strong id="modelName">读取中...</strong>
+        </div>
+        <div class="status-row">
+          <span>思考模型</span>
+          <strong id="thinkingModelName">读取中...</strong>
+        </div>
+        <div class="status-row">
+          <span>API Key</span>
+          <strong id="keyStatus">读取中...</strong>
+        </div>
+      </section>
+
+      <section class="history-panel">
+        <div class="history-header">
+          <div class="section-label">历史会话</div>
+          <button id="newChatBtn" type="button">新建</button>
+        </div>
+        <div id="conversationList" class="conversation-list"></div>
+      </section>
+    </aside>
+
+    <section class="chat-panel">
+      <header class="chat-header">
+        <div>
+          <h2>出行需求对话</h2>
+        </div>
+        <button id="clearBtn" type="button">清空</button>
+      </header>
+
+      <div id="messages" class="messages" aria-live="polite">
+        <article class="message assistant">
+          <div class="avatar">AI</div>
+          <div class="bubble">
+            你好，我可以帮你规划旅行。试试输入：“我明天从郑州去杭州，玩3天，2个人，酒店300，餐饮120，门票300”。
+          </div>
+        </article>
+      </div>
+
+      <form id="chatForm" class="composer">
+        <div class="composer-toolbar">
+          <label class="compact-toggle">
+            <input id="thinkingToggle" type="checkbox" checked>
+            <span>深度思考</span>
+          </label>
+          <label class="compact-toggle">
+            <input id="offlineToggle" type="checkbox">
+            <span>离线演示</span>
+          </label>
+        </div>
+        <div class="input-wrap">
+          <textarea id="messageInput" rows="2" placeholder="请输入你的出行需求，例如：明天从宁波去舟山玩1天..."></textarea>
+        </div>
+        <button id="sendBtn" type="submit">
+          <span>发送</span>
+        </button>
+      </form>
+    </section>
+  </main>
+
+  <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+  <script src="{{ url_for('static', filename='app.js') }}"></script>
+</body>
+</html>
