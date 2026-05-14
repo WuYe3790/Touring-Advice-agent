@@ -53,6 +53,19 @@ THINKING_MODE_PROMPT = """
 4. 不输出冗长的内部推理链，只输出用户可读的思考摘要和结论。
 """
 
+REAL_DATA_TOOL_PROMPT = """
+当前项目已接入真实数据工具：
+1. get_weather_info 会优先使用和风天气查询实时天气和3日预报，失败时回退 Open-Meteo。
+2. get_transport_advice 会优先使用高德地图解析路线距离、驾车耗时和费用估算，失败时回退通用交通建议。
+3. search_travel_pois 可用高德地图搜索目的地景点、博物馆、餐饮、商圈、酒店等 POI。
+4. get_place_location 可用高德地图核验地点地址和经纬度。
+
+使用要求：
+- 当用户请求具体目的地旅行规划时，除了天气和交通，优先调用 search_travel_pois 获取真实景点/餐饮/商圈候选，再组织路线。
+- 当地点名称可能模糊或需要核验时，调用 get_place_location。
+- 最终回答应说明关键数据来源，例如“天气来自和风天气”“地点和路线来自高德地图”。
+"""
+
 
 def build_agent(config: LLMConfig, thinking_mode: bool = False):
     if not config.api_key:
@@ -70,7 +83,14 @@ def build_agent(config: LLMConfig, thinking_mode: bool = False):
 如果用户询问你的身份、模型、版本或供应商，请根据以上实际运行配置回答。
 不要声称自己是未在当前配置中出现的模型或供应商。
 """
-    system_prompt = BASE_SYSTEM_PROMPT + "\n" + identity_prompt + ("\n" + THINKING_MODE_PROMPT if thinking_mode else "")
+    system_prompt = (
+        BASE_SYSTEM_PROMPT
+        + "\n"
+        + REAL_DATA_TOOL_PROMPT
+        + "\n"
+        + identity_prompt
+        + ("\n" + THINKING_MODE_PROMPT if thinking_mode else "")
+    )
 
     llm_kwargs = {
         # DeepSeek V4 API-level thinking returns reasoning_content. When a tool call

@@ -8,6 +8,8 @@ const thinkingToggle = document.querySelector("#thinkingToggle");
 const modelName = document.querySelector("#modelName");
 const thinkingModelName = document.querySelector("#thinkingModelName");
 const keyStatus = document.querySelector("#keyStatus");
+const amapStatus = document.querySelector("#amapStatus");
+const qweatherStatus = document.querySelector("#qweatherStatus");
 const conversationListEl = document.querySelector("#conversationList");
 const newChatBtn = document.querySelector("#newChatBtn");
 const CURRENT_CONVERSATION_KEY = "travel_agent_current_conversation_id";
@@ -586,10 +588,18 @@ async function loadStatus() {
     modelName.textContent = data.model || "未知";
     thinkingModelName.textContent = data.thinking_model || "未知";
     keyStatus.textContent = data.api_key_loaded ? "已配置" : "未配置";
+    if (amapStatus) amapStatus.textContent = data.amap_key_loaded ? "已配置" : "未配置";
+    if (qweatherStatus) {
+      qweatherStatus.textContent = data.qweather_key_loaded
+        ? (data.qweather_host_loaded ? "已配置" : "缺少 Host")
+        : "未配置";
+    }
   } catch {
     modelName.textContent = "读取失败";
     thinkingModelName.textContent = "读取失败";
     keyStatus.textContent = "未知";
+    if (amapStatus) amapStatus.textContent = "未知";
+    if (qweatherStatus) qweatherStatus.textContent = "未知";
   }
 }
 

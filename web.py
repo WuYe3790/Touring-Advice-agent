@@ -74,6 +74,9 @@ def status():
             "thinking_model": config.thinking_model,
             "base_url": config.base_url,
             "api_key_loaded": bool(config.api_key),
+            "amap_key_loaded": bool(os.getenv("AMAP_API_KEY", "").strip()),
+            "qweather_key_loaded": bool(os.getenv("QWEATHER_API_KEY", "").strip()),
+            "qweather_host_loaded": bool(os.getenv("QWEATHER_API_HOST", "").strip()),
         }
     )
 

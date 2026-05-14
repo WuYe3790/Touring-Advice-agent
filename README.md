@@ -86,7 +86,7 @@
         ├── cli.py                 # CLI 参数解析
         ├── config.py              # .env 配置读取
         ├── storage.py             # SQLite 会话和消息持久化
-        └── tools.py               # 天气、预算、交通工具
+        └── tools.py               # 天气、预算、交通、POI、地点解析工具
 ```
 
 ## 环境配置
@@ -118,9 +118,12 @@ LLM_MODEL=deepseek-v4-flash
 LLM_THINKING_MODEL=deepseek-v4-pro
 LLM_TEMPERATURE=0.3
 LLM_TIMEOUT=90
+AMAP_API_KEY=你的高德地图 Web 服务 Key
+QWEATHER_API_KEY=你的和风天气 API Key
+QWEATHER_API_HOST=你的和风天气专属 API Host
 ```
 
-注意：`.env` 不应提交到公开仓库。
+注意：`.env` 不应提交到公开仓库。和风天气当前需要在控制台-设置中复制专属 API Host；如果暂时没有填写 `QWEATHER_API_HOST`，项目会自动使用高德天气或 Open-Meteo 回退。
 
 ## 运行方式
 
@@ -192,9 +195,13 @@ flowchart TD
     E --> F["get_weather_info 天气查询"]
     E --> G["get_transport_advice 交通建议"]
     E --> H["calculate_trip_budget 预算计算"]
+    E --> M["search_travel_pois POI搜索"]
+    E --> N["get_place_location 地点解析"]
     F --> I["工具结果返回 Agent"]
     G --> I
     H --> I
+    M --> I
+    N --> I
     I --> J["DeepSeek LLM 汇总规划"]
     J --> K["SSE 流式返回阶段事件和最终答案"]
     K --> L["前端实时展示执行过程"]
@@ -226,9 +233,11 @@ flowchart TD
 
 当前工具：
 
-- `get_weather_info(city, date)`：调用 Open-Meteo 查询天气
-- `get_transport_advice(origin, destination)`：生成交通建议
+- `get_weather_info(city, date)`：优先调用和风天气；未配置和风 API Host 时使用高德天气；再失败时回退 Open-Meteo
+- `get_transport_advice(origin, destination)`：优先调用高德地图解析路线距离、驾车耗时和费用估算；失败时生成通用交通建议
 - `calculate_trip_budget(...)`：按人数、天数、酒店、餐饮、门票计算预算
+- `search_travel_pois(city, keyword, limit)`：调用高德地图搜索景点、餐饮、商圈、酒店等 POI
+- `get_place_location(place, city)`：调用高德地图核验地点地址和经纬度
 
 工具会在控制台输出调用日志，便于实验展示和调试。
 
