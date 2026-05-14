@@ -37,7 +37,8 @@ BASE_SYSTEM_PROMPT_TEMPLATE = """
   "transport_options": [{"mode": "交通方式", "from": "出发地", "to": "目的地", "duration": "耗时", "cost_estimate": "费用估计", "notes": "补充说明"}],
   "daily_itinerary": [{"day": 1, "title": "当日主题", "activities": ["活动1", "活动2"], "meals": ["餐饮建议"], "accommodation": "住宿建议"}],
   "budget": {"total": 0, "breakdown": {"项目": 0}, "currency": "CNY", "notes": "预算说明"},
-  "tips": ["提示1", "提示2"]
+  "tips": ["提示1", "提示2"],
+  "poi_recommendations": [{"category": "分类标签", "items": [{"name": "地点名", "type": "类型", "address": "地址"}]}]
 }
 ```
 要求：内容必须与你的 Markdown 回答保持一致；无数据时使用空数组 []；json 代码块必须放在回答最末尾；不要在 json 之后添加任何文本；不要因为用户要求简短、快速或只回答一句话而省略 json 代码块。
@@ -61,9 +62,11 @@ REAL_DATA_TOOL_PROMPT = """
 4. get_place_location 可用高德地图核验地点地址和经纬度。
 
 使用要求：
-- 当用户请求具体目的地旅行规划时，除了天气和交通，优先调用 search_travel_pois 获取真实景点/餐饮/商圈候选，再组织路线。
+- 当用户请求具体目的地旅行规划时，除了天气和交通，优先调用 search_travel_pois 至少 3 次：分别搜索"景点"、"餐饮"或"本地菜"、"商圈"或"购物"。如果行程涉及住宿，还应搜索"酒店"。
 - 当地点名称可能模糊或需要核验时，调用 get_place_location。
-- 最终回答应说明关键数据来源，例如“天气来自和风天气”“地点和路线来自高德地图”。
+- 最终回答的 JSON 代码块中必须包含 poi_recommendations 字段，将 search_travel_pois 返回的真实 POI 结果按类别分组填入。每个 item 必须包含 name（地点名）、type（POI 类型）和 address（地址）。示例：
+  {"category": "景点推荐", "items": [{"name": "西湖", "type": "风景名胜", "address": "杭州市西湖区龙井路1号"}]}
+- 最终回答应说明关键数据来源，例如"天气来自和风天气""地点和路线来自高德地图"。
 """
 
 
@@ -287,7 +290,7 @@ def extract_structured_json(text: str) -> dict | None:
     fences = _find_json_fence_pairs(text)
     if not fences:
         return None
-    known_keys = ("summary", "weather", "transport_options", "daily_itinerary", "budget", "tips")
+    known_keys = ("summary", "weather", "transport_options", "daily_itinerary", "budget", "tips", "poi_recommendations")
     for _start, _end, content in reversed(fences):
         try:
             data = json.loads(content)
@@ -702,6 +705,33 @@ def run_offline_demo(user_input: str) -> str:
             "杭州夏季炎热，注意防晒补水",
             "灵隐寺建议上午前往，避开人流高峰",
             "建议购买杭州旅游一卡通，可节省门票费用",
+        ],
+        "poi_recommendations": [
+            {
+                "category": "景点推荐",
+                "items": [
+                    {"name": "西湖风景名胜区", "type": "风景名胜", "address": "杭州市西湖区龙井路1号"},
+                    {"name": "灵隐寺", "type": "寺庙", "address": "杭州市西湖区法云弄1号"},
+                    {"name": "西溪国家湿地公园", "type": "公园", "address": "杭州市西湖区天目山路518号"},
+                    {"name": "雷峰塔", "type": "文物古迹", "address": "杭州市西湖区南山路15号"},
+                ],
+            },
+            {
+                "category": "餐饮推荐",
+                "items": [
+                    {"name": "楼外楼", "type": "杭帮菜", "address": "杭州市西湖区孤山路30号"},
+                    {"name": "知味观", "type": "小吃", "address": "杭州市上城区仁和路83号"},
+                    {"name": "绿茶餐厅", "type": "创意菜", "address": "杭州市西湖区龙井路83号"},
+                ],
+            },
+            {
+                "category": "商圈推荐",
+                "items": [
+                    {"name": "湖滨银泰in77", "type": "购物中心", "address": "杭州市上城区延安路258号"},
+                    {"name": "河坊街", "type": "特色街区", "address": "杭州市上城区河坊街"},
+                    {"name": "武林广场", "type": "商圈", "address": "杭州市拱墅区武林广场"},
+                ],
+            },
         ],
     }
 

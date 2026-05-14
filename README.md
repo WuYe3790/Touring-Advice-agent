@@ -4,6 +4,60 @@
 
 项目参考了本地下载网页《【LangChain+文心大模型】构建旅游出行规划智能体 - 飞桨AI Studio星河社区》，但当前实现已经扩展为带 Web UI、多轮会话持久化和流式工具调用可视化的版本。
 
+## 接手总览（2026-05-14）
+
+当前项目已经从课程实验 Demo 扩展为一个可演示的旅游规划 Agent Web 应用。核心闭环已经跑通：用户自然语言输入出行需求，LangChain Agent 调用 DeepSeek 模型分析需求，并按需调用天气、路线、POI、地点解析、预算计算等工具，最后通过 Web UI 输出 Markdown 方案和结构化卡片。
+
+当前服务状态：
+
+- Flask 服务已手动停止，`127.0.0.1:5000` 当前不应再有项目进程监听。
+- 下次启动仍使用：
+
+```powershell
+C:\Users\BaoXinJie\anaconda3\python.exe app.py
+```
+
+当前 `.env` 已配置：
+
+- DeepSeek API：普通模式 `deepseek-v4-flash`，深度思考模式 `deepseek-v4-pro`
+- 高德地图 Web 服务 Key：用于地点解析、POI 搜索、路线距离、天气回退
+- 和风天气 API Key + 专属 API Host：用于实时天气和 3 日预报
+
+注意：`.env` 包含真实密钥，不要提交到公开仓库，也不要在后续回答中完整打印。
+
+已完成阶段：
+
+1. **Phase 0：实验基础版**
+   - Python + LangChain + DeepSeek Agent
+   - 天气、交通、预算工具
+   - CLI 和 Flask Web 两种入口
+
+2. **Phase 1：结构化输出与前端卡片**
+   - Agent 在最终回答末尾输出 JSON
+   - 后端提取为 `structured_data`
+   - 前端渲染天气卡片、交通卡片、预算卡片、每日行程时间轴和提示列表
+   - 原始 JSON 不直接展示给用户
+
+3. **Phase 2：Agent 执行时间轴**
+   - SSE 实时返回 Agent 阶段事件
+   - 运行中 trace 自动展开，完成后自动折叠
+   - 每步显示状态、相对时间、耗时和异常高亮
+   - 支持前端“停止”当前请求
+   - 支持导出 Agent 执行报告 JSON
+
+4. **Phase 3 基础版：真实数据源工具**
+   - 高德地图：地理编码、POI 搜索、驾车路线、距离/耗时/过路费估算、天气回退
+   - 和风天气：已支持专属 Host 鉴权方式，配置齐全后优先使用
+   - Open-Meteo：作为最终天气回退
+   - Agent 提示词已要求在具体旅行规划中优先调用真实 POI、路线和天气工具
+
+建议下一位接手者优先做：
+
+- 验证和风天气 Host 是否可用：调用 `get_weather_info("杭州")`，确认输出数据源为“和风天气”。
+- 做 Phase 3 完整版：把高德 POI 结果进一步结构化，让前端渲染“景点/餐饮/商圈推荐卡片”。
+- 接入 12306-MCP 作为可选本地火车票查询工具，但不要把它做成必需依赖。
+- 补充 pytest 测试，尤其是工具层 mock 测试、SSE 离线模式测试和 SQLite 持久化测试。
+
 ## 当前状态
 
 已完成：
@@ -23,6 +77,8 @@
 - 生成中可点击“停止”中断当前前端请求
 - 支持导出 Agent 执行报告 JSON
 - 每轮回复保存模型、模式、耗时和 trace 元数据
+- 高德地图真实数据源：地点解析、POI 搜索、驾车路线、距离/耗时/费用估算、天气回退
+- 和风天气真实数据源：支持 API Key + 专属 API Host 鉴权方式，优先查询实时天气和 3 日预报
 - **结构化 JSON 输出 + 前端卡片渲染**（v2.0 新增）：Agent 在 Markdown 末尾输出 JSON 代码块，后端提取为 `structured_data`，前端渲染为天气卡片、每日行程时间轴、交通方案卡、预算明细卡和出行提示列表；原始 JSON 不直接展示给用户
 
 当前适合：
@@ -46,6 +102,7 @@
 - Agent 自主决定是否调用天气、交通、预算工具。
 - 工具返回后，LLM 汇总生成中文旅行规划。
 - 前端实时展示 Agent 运行阶段，让用户知道请求已经发出、模型正在工作、工具是否被调用。
+- 对于真实旅行规划，Agent 会优先使用高德地图和和风天气补充地点、路线、天气和 POI 数据。
 
 ## 技术栈
 
@@ -55,6 +112,8 @@
 - 智能体框架：LangChain
 - LLM 接入：`langchain-openai` 的 OpenAI-compatible 接口
 - 模型平台：DeepSeek
+- 地图与 POI 数据：高德地图 Web 服务 API
+- 天气数据：和风天气；高德天气和 Open-Meteo 作为回退
 - 前端：原生 HTML、CSS、JavaScript
 - 历史记录：SQLite
 - 流式通信：SSE，接口为 `/api/chat/stream`
@@ -123,7 +182,7 @@ QWEATHER_API_KEY=你的和风天气 API Key
 QWEATHER_API_HOST=你的和风天气专属 API Host
 ```
 
-注意：`.env` 不应提交到公开仓库。和风天气当前需要在控制台-设置中复制专属 API Host；如果暂时没有填写 `QWEATHER_API_HOST`，项目会自动使用高德天气或 Open-Meteo 回退。
+注意：`.env` 不应提交到公开仓库。当前本地 `.env` 已填写 DeepSeek、高德地图、和风天气 Key 以及和风天气专属 Host。和风天气如果失效，项目会自动使用高德天气或 Open-Meteo 回退。
 
 ## 运行方式
 
@@ -384,8 +443,9 @@ extra_body={"thinking": {"type": "disabled"}}
 2. 如果 DeepSeek 控制台没有请求记录，先确认前端没有开启“离线演示模式”。
 3. 如果问“你是什么模型”却回答 Claude，优先检查 `agent.py` 中身份提示词是否被改坏。
 4. 不建议直接开启 DeepSeek API-level thinking，除非接手者能处理 `reasoning_content` 的多轮回传。
-5. 天气工具依赖 Open-Meteo 网络接口，没网或接口失败时会返回异常文本，Agent 会继续整合结果。
+5. 天气工具优先使用和风天气；如果和风配置不可用，会回退高德天气；再失败才回退 Open-Meteo。没网或接口失败时会返回异常文本，Agent 会继续整合结果。
 6. 当前 Flask 是开发服务器，只适合本地演示，不是生产部署。
+7. 高德地图和和风天气都有额度限制，演示时避免高频反复刷新真实请求。
 
 ## 常用验证命令
 
@@ -456,16 +516,22 @@ C:\Users\BaoXinJie\anaconda3\python.exe -c "from web import app; c=app.test_clie
 
 ### 3. 更多工具
 
-可扩展：
+当前已经完成真实数据源基础版：
 
-- 景点/POI 推荐
-- 地图距离和通勤时间
+- 景点/POI 推荐：高德地图 `search_travel_pois`
+- 地图距离和通勤时间：高德地图 `get_transport_advice`
+- 地点解析：高德地图 `get_place_location`
+- 天气：和风天气优先，高德天气和 Open-Meteo 回退
+
+后续可继续扩展：
+
+- 12306-MCP 火车票查询
 - 节假日判断
 - 汇率工具
 - 酒店/餐饮 mock 数据
 - 本地旅行知识库 RAG
 
-即使不接真实付费 API，也可以先设计接口和 mock 数据。
+即使不接真实付费酒店/机票 API，也可以先设计接口和 mock 数据。
 
 ### 4. 用户偏好系统
 
@@ -502,7 +568,7 @@ Agent 根据偏好调整路线和推荐。
 
 可以写成：
 
-> 基于 LangChain 和 DeepSeek 的智能旅行规划 Agent，支持多轮对话、工具调用、天气查询、预算计算、交通建议和流式执行过程可视化。系统使用 Flask 提供 Web 交互界面，通过 SSE 实时展示 Agent 的工具调用阶段，并用 SQLite 持久化历史会话和每轮 trace。v2.0 新增结构化 JSON 输出，前端渲染为天气卡片、行程时间轴、交通方案卡、预算明细卡和出行提示列表，实现从 LLM 文本到产品化 UI 卡片的完整链路。项目支持普通模式与深度规划模式切换，完整体现”需求理解、任务拆解、工具调用、结果汇总”的智能体工作流。
+> 基于 LangChain 和 DeepSeek 的智能旅行规划 Agent，支持多轮对话、工具调用、天气查询、预算计算、交通建议、真实 POI 检索和流式执行过程可视化。系统使用 Flask 提供 Web 交互界面，通过 SSE 实时展示 Agent 的工具调用阶段，并用 SQLite 持久化历史会话和每轮 trace。项目接入高德地图和和风天气，支持地点解析、路线距离、景点/餐饮 POI 搜索和实时天气查询；同时新增结构化 JSON 输出，前端渲染为天气卡片、行程时间轴、交通方案卡、预算明细卡和出行提示列表，实现从 LLM 文本到产品化 UI 卡片的完整链路。项目支持普通模式与深度规划模式切换，完整体现”需求理解、任务拆解、工具调用、结果汇总”的智能体工作流。
 
 ## 建议接手顺序
 
@@ -510,7 +576,7 @@ Agent 根据偏好调整路线和推荐。
 2. 再阅读 `web.py`，理解 `/api/chat/stream` 如何保存消息、转发 `structured_data` 并流式返回。
 3. 再阅读 `static/app.js`，理解前端 SSE 解析、Markdown 渲染以及 **卡片渲染函数**（`renderStructuredCardsInto` / `renderWeatherCards` / `renderItineraryTimeline` 等）。
 4. 再阅读 `storage.py` 和 `tools.py`，理解持久化和工具实现。
-5. Phase 1 和 Phase 2 基础能力已经完成。下一步优先做 **Phase 3：更多外部工具与真实数据源**，例如 POI 推荐、地图距离、节假日判断或本地旅行知识库 RAG。
+5. Phase 1、Phase 2 和 Phase 3 真实数据源基础版已经完成。下一步优先验证和风天气 Host，然后继续做 **12306-MCP 火车票查询工具** 或 **POI 推荐卡片增强**。
 
 ## v2.0 结构化输出系统说明（Phase 1 已完成）
 

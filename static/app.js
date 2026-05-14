@@ -774,6 +774,9 @@ function buildStructuredCards(data) {
   if (data.tips && data.tips.length) {
     html += renderTipsList(data.tips);
   }
+  if (data.poi_recommendations && data.poi_recommendations.length) {
+    html += renderPoiCards(data.poi_recommendations);
+  }
   return html;
 }
 
@@ -858,4 +861,24 @@ function renderTipsList(tips) {
     </li>
   `).join("");
   return `<div class="card-section"><h3 class="card-section-title">出行提示</h3><ul class="tips-list">${items}</ul></div>`;
+}
+
+function renderPoiCards(categories) {
+  if (!categories || !categories.length) return "";
+  const sections = categories.map(cat => {
+    const items = (cat.items || []).map(item => `
+      <div class="poi-card">
+        <span class="poi-card-type">${escapeHtml(item.type || "")}</span>
+        <h4 class="poi-card-name">${escapeHtml(item.name || "")}</h4>
+        ${item.address ? `<p class="poi-card-address">${escapeHtml(item.address)}</p>` : ""}
+      </div>
+    `).join("");
+    return `
+      <div class="poi-category">
+        <h4 class="poi-category-title">${escapeHtml(cat.category || "POI推荐")}</h4>
+        <div class="poi-card-grid">${items}</div>
+      </div>
+    `;
+  }).join("");
+  return `<div class="card-section"><h3 class="card-section-title">地点推荐</h3><div class="poi-categories">${sections}</div></div>`;
 }
