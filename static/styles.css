@@ -464,6 +464,41 @@ textarea {
   color: #475467;
 }
 
+.trace-desc {
+  color: #667085;
+}
+
+.trace-arg-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  margin-top: 7px;
+}
+
+.trace-arg-chips span {
+  display: inline-flex;
+  max-width: 100%;
+  padding: 2px 7px;
+  border-radius: 999px;
+  background: #eef2f7;
+  color: #475467;
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+.trace-raw {
+  margin-top: 6px;
+}
+
+.trace-raw summary {
+  width: fit-content;
+  padding: 2px 0;
+  color: #667085;
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 700;
+}
+
 .trace-pending {
   color: #98a2b3 !important;
   font-style: italic;
@@ -829,6 +864,106 @@ textarea {
   color: var(--muted);
 }
 
+/* Weather Alert Cards */
+.weather-alert-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 10px;
+}
+
+.weather-alert-card {
+  display: grid;
+  gap: 8px;
+  padding: 14px 16px;
+  border: 1px solid var(--line);
+  border-left: 4px solid #94a3b8;
+  border-radius: 14px;
+  background: #ffffff;
+}
+
+.weather-alert-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.weather-alert-badge {
+  display: inline-flex;
+  max-width: 100%;
+  padding: 3px 9px;
+  border-radius: 999px;
+  background: #f1f5f9;
+  color: #475467;
+  font-size: 11px;
+  font-weight: 800;
+}
+
+.weather-alert-city {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.weather-alert-card h4 {
+  margin: 0;
+  color: var(--text);
+  font-size: 14px;
+  line-height: 1.4;
+}
+
+.weather-alert-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+
+.weather-alert-meta span {
+  display: inline-flex;
+  padding: 2px 7px;
+  border-radius: 999px;
+  background: #f8fafc;
+  border: 1px solid var(--line);
+  color: #667085;
+  font-size: 11px;
+}
+
+.weather-alert-card p {
+  margin: 0;
+  color: #475467;
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+.weather-alert-card.alert-danger {
+  border-left-color: #dc2626;
+  background: #fff7f7;
+}
+
+.weather-alert-card.alert-orange {
+  border-left-color: #f97316;
+  background: #fff7ed;
+}
+
+.weather-alert-card.alert-yellow {
+  border-left-color: #eab308;
+  background: #fefce8;
+}
+
+.weather-alert-card.alert-blue {
+  border-left-color: #2563eb;
+  background: #eff6ff;
+}
+
+.weather-alert-card.alert-clear {
+  border-left-color: #10b981;
+  background: #f0fdf4;
+}
+
+.weather-alert-card.alert-muted {
+  border-left-color: #94a3b8;
+  background: #f8fafc;
+}
+
 /* Timeline */
 .timeline {
   display: grid;
@@ -901,11 +1036,58 @@ textarea {
 .transport-card {
   flex: 1 1 240px;
   display: grid;
-  gap: 8px;
+  gap: 10px;
   padding: 14px;
   border: 1px solid var(--line);
   border-radius: 14px;
   background: #ffffff;
+  box-shadow: 0 10px 24px rgba(15, 23, 42, 0.04);
+}
+
+.transport-card-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.transport-icon {
+  display: inline-grid;
+  width: 34px;
+  height: 34px;
+  place-items: center;
+  border-radius: 10px;
+  background: var(--accent-soft);
+  color: var(--accent-dark);
+  font-size: 14px;
+  font-weight: 800;
+  flex-shrink: 0;
+}
+
+.transport-flight .transport-icon {
+  background: #e0f2fe;
+  color: #0369a1;
+}
+
+.transport-train .transport-icon,
+.transport-interline .transport-icon {
+  background: #ecfdf3;
+  color: #047857;
+}
+
+.transport-transit .transport-icon {
+  background: #eef2ff;
+  color: #4f46e5;
+}
+
+.transport-walking .transport-icon,
+.transport-bicycling .transport-icon {
+  background: #fff7ed;
+  color: #c2410c;
+}
+
+.transport-driving .transport-icon {
+  background: #f1f5f9;
+  color: #334155;
 }
 
 .transport-mode-badge {
@@ -919,10 +1101,35 @@ textarea {
   font-weight: 700;
 }
 
+.transport-type-label {
+  margin-top: 2px;
+  font-size: 11px;
+  color: var(--muted);
+}
+
 .transport-route {
   font-weight: 700;
   font-size: 14px;
   color: var(--text);
+  line-height: 1.45;
+}
+
+.transport-meta-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.transport-meta-chips span {
+  display: inline-flex;
+  max-width: 100%;
+  padding: 3px 8px;
+  border-radius: 999px;
+  background: #f8fafc;
+  border: 1px solid var(--line);
+  color: #475467;
+  font-size: 11px;
+  line-height: 1.4;
 }
 
 .transport-details {
@@ -948,6 +1155,75 @@ textarea {
   color: var(--muted);
   font-size: 12px;
   line-height: 1.45;
+}
+
+.transport-legs {
+  display: grid;
+  gap: 8px;
+  padding-top: 2px;
+}
+
+.transport-leg {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 8px;
+  padding: 9px 10px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: #f8fafc;
+}
+
+.transport-leg-index {
+  display: inline-grid;
+  width: 22px;
+  height: 22px;
+  place-items: center;
+  border-radius: 50%;
+  background: #ffffff;
+  border: 1px solid var(--line);
+  color: var(--accent-dark);
+  font-size: 11px;
+  font-weight: 800;
+}
+
+.transport-leg-body {
+  min-width: 0;
+  display: grid;
+  gap: 4px;
+}
+
+.transport-leg-title {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--text);
+}
+
+.transport-leg-title span {
+  color: #047857;
+  font-weight: 700;
+}
+
+.transport-leg-route,
+.transport-leg-meta,
+.transport-leg-notes {
+  font-size: 12px;
+  color: var(--muted);
+  line-height: 1.45;
+}
+
+.transport-leg-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.transport-leg-meta span {
+  padding: 2px 6px;
+  border-radius: 999px;
+  background: #ffffff;
+  border: 1px solid var(--line);
 }
 
 /* Budget Card */

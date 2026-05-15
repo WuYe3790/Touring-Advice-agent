@@ -34,7 +34,50 @@ WEATHER_CODES = {
 }
 
 AMAP_BASE_URL = "https://restapi.amap.com/v3"
+# Aviationstack free-tier keys commonly reject HTTPS with HTTP 403.
+AVIATIONSTACK_BASE_URL = "http://api.aviationstack.com/v1"
 COORDINATE_RE = re.compile(r"^\s*(-?\d+(?:\.\d+)?)\s*,\s*(-?\d+(?:\.\d+)?)\s*$")
+AIRPORT_IATA_BY_CITY = {
+    "北京": "PEK",
+    "北京首都": "PEK",
+    "大兴": "PKX",
+    "上海": "SHA",
+    "上海虹桥": "SHA",
+    "上海浦东": "PVG",
+    "广州": "CAN",
+    "深圳": "SZX",
+    "成都": "TFU",
+    "成都天府": "TFU",
+    "成都双流": "CTU",
+    "重庆": "CKG",
+    "杭州": "HGH",
+    "宁波": "NGB",
+    "郑州": "CGO",
+    "南京": "NKG",
+    "武汉": "WUH",
+    "长沙": "CSX",
+    "西安": "XIY",
+    "昆明": "KMG",
+    "厦门": "XMN",
+    "青岛": "TAO",
+    "天津": "TSN",
+    "济南": "TNA",
+    "福州": "FOC",
+    "三亚": "SYX",
+    "海口": "HAK",
+    "哈尔滨": "HRB",
+    "沈阳": "SHE",
+    "大连": "DLC",
+    "乌鲁木齐": "URC",
+    "贵阳": "KWE",
+    "南宁": "NNG",
+    "太原": "TYN",
+    "兰州": "LHW",
+    "呼和浩特": "HET",
+    "长春": "CGQ",
+    "拉萨": "LXA",
+    "张家界": "DYG",
+}
 
 
 def _get_env_key(name: str) -> str:
@@ -50,6 +93,10 @@ def _request_json(url: str, params: dict[str, object], timeout: int = 10, header
 
 def _amap_key() -> str:
     return _get_env_key("AMAP_API_KEY")
+
+
+def _aviationstack_key() -> str:
+    return _get_env_key("AVIATIONSTACK_API_KEY")
 
 
 def _qweather_key() -> str:
@@ -151,6 +198,16 @@ def _amap_location(address: str, city: str = "") -> tuple[str, str] | None:
     return info["location"], info.get("formatted_address") or address
 
 
+def _resolve_route_points(origin: str, destination: str, city: str = "") -> tuple[str, str, str, str] | None:
+    origin_info = _amap_location(origin, city=city)
+    destination_info = _amap_location(destination, city=city)
+    if not origin_info or not destination_info:
+        return None
+    origin_location, origin_address = origin_info
+    destination_location, destination_address = destination_info
+    return origin_location, origin_address, destination_location, destination_address
+
+
 def _format_minutes(seconds: int | float | str) -> str:
     try:
         minutes = max(1, round(float(seconds) / 60))
@@ -169,6 +226,25 @@ def _format_km(meters: int | float | str) -> str:
     except (TypeError, ValueError):
         return "未知"
     return f"{km:.1f}公里"
+
+
+def _format_route_steps(steps: list[dict], limit: int = 6) -> str:
+    items = []
+    for step in steps[:limit]:
+        instruction = _first_non_empty(step.get("instruction"), step.get("road"), default="")
+        distance = step.get("distance")
+        if instruction:
+            items.append(f"{instruction}（{_format_km(distance)}）" if distance else instruction)
+    return "；".join(items) if items else "未返回详细步骤"
+
+
+def _format_distance_matrix_type(travel_type: str) -> tuple[str, int]:
+    normalized = str(travel_type or "driving").strip().lower()
+    if normalized in {"walking", "walk", "步行"}:
+        return "步行", 3
+    if normalized in {"straight", "linear", "distance", "直线"}:
+        return "直线距离", 0
+    return "驾车", 1
 
 
 def _city_name_from_geocode(info: dict | None, fallback: str) -> str:
@@ -196,6 +272,18 @@ def _format_transit_cost(cost: object) -> str:
     if not value:
         return "未知"
     return value if value.endswith("元") else f"{value}元"
+
+
+def _geocode_many(places: str, city: str = "") -> list[tuple[str, str, str]]:
+    results: list[tuple[str, str, str]] = []
+    for raw_place in re.split(r"[|,，;；\n]+", str(places or "")):
+        place = raw_place.strip()
+        if not place:
+            continue
+        info = _amap_geocode(place, city=city)
+        if info and info.get("location"):
+            results.append((place, info["location"], info.get("formatted_address") or place))
+    return results
 
 
 def _format_transit_segment(segment: dict) -> str:
@@ -272,6 +360,73 @@ def _format_poi_lines(title: str, pois: list[dict], limit: int) -> str:
 
 def _amap_marker_url(location: str, name: str) -> str:
     return f"https://uri.amap.com/marker?position={location}&name={requests.utils.quote(name)}"
+
+
+def _first_non_empty(*values: object, default: str = "未知") -> str:
+    for value in values:
+        text = _poi_scalar(value, "").strip()
+        if text:
+            return text
+    return default
+
+
+def _normalize_airport_iata(value: str) -> str:
+    text = str(value or "").strip().upper()
+    if re.fullmatch(r"[A-Z]{3}", text):
+        return text
+    cleaned = str(value or "").strip()
+    for suffix in ("市", "机场", "国际机场", "机场T1", "机场T2", "机场T3"):
+        cleaned = cleaned.replace(suffix, "")
+    return AIRPORT_IATA_BY_CITY.get(cleaned, text)
+
+
+def _format_flight_time(value: object) -> str:
+    text = _poi_scalar(value, "")
+    if not text:
+        return "未知"
+    return text.replace("T", " ").split("+")[0]
+
+
+def _format_aviationstack_flights(
+    flights: list[dict],
+    dep_iata: str,
+    arr_iata: str,
+    limit: int,
+    note: str = "",
+) -> str:
+    lines = [
+        "数据源：Aviationstack",
+        "说明：该接口提供航班时刻/状态信息，不提供机票价格；票价需到航司或 OTA 平台另查。",
+        f"查询机场：{dep_iata or '不限'} → {arr_iata or '不限'}",
+    ]
+    if note:
+        lines.append(note)
+    for index, flight in enumerate(flights[: max(1, min(int(limit), 20))], start=1):
+        dep = flight.get("departure") or {}
+        arr = flight.get("arrival") or {}
+        airline_info = flight.get("airline") or {}
+        flight_info = flight.get("flight") or {}
+        flight_code = _first_non_empty(flight_info.get("iata"), flight_info.get("icao"), flight_info.get("number"))
+        airline_name = _first_non_empty(airline_info.get("name"), airline_info.get("iata"), default="未知航空公司")
+        dep_airport = _first_non_empty(dep.get("airport"), dep.get("iata"), default="未知出发机场")
+        arr_airport = _first_non_empty(arr.get("airport"), arr.get("iata"), default="未知到达机场")
+        dep_time = _format_flight_time(dep.get("scheduled") or dep.get("estimated") or dep.get("actual"))
+        arr_time = _format_flight_time(arr.get("scheduled") or arr.get("estimated") or arr.get("actual"))
+        status = _first_non_empty(flight.get("flight_status"), default="未知状态")
+        terminal_gate = []
+        if dep.get("terminal"):
+            terminal_gate.append(f"出发航站楼 {dep.get('terminal')}")
+        if dep.get("gate"):
+            terminal_gate.append(f"登机口 {dep.get('gate')}")
+        if arr.get("terminal"):
+            terminal_gate.append(f"到达航站楼 {arr.get('terminal')}")
+        lines.append(
+            f"{index}. {airline_name} {flight_code}；"
+            f"{dep_airport}({dep.get('iata', '未知')}) → {arr_airport}({arr.get('iata', '未知')})；"
+            f"计划 {dep_time} → {arr_time}；状态 {status}"
+            + (f"；{'，'.join(terminal_gate)}" if terminal_gate else "")
+        )
+    return "\n".join(lines)
 
 
 def _log_tool_start(name: str, **kwargs: object) -> float:
@@ -659,6 +814,104 @@ def get_transport_advice(origin: str, destination: str) -> str:
 
 
 @tool
+def search_flight_options(
+    departure: str = "",
+    arrival: str = "",
+    date: str = "",
+    airline: str = "",
+    flight_number: str = "",
+    limit: int = 8,
+) -> str:
+    """使用 Aviationstack 查询航班时刻/状态信息，作为跨城远距离出行的飞机备选。
+
+    注意：Aviationstack 提供的是航班动态、机场、航空公司和计划/实际时刻信息，不提供机票价格。
+    Args:
+        departure: 出发机场 IATA 三字码或常见城市名，例如 "NGB"、"CGO"、"宁波"、"郑州"。
+        arrival: 到达机场 IATA 三字码或常见城市名，例如 "HGH"、"成都"、"北京"。
+        date: 可选，航班日期 YYYY-MM-DD。免费/实时接口可能主要返回当前或近期数据，历史/未来日期是否可用取决于账号套餐。
+        airline: 可选，航空公司 IATA 代码，例如 "MU"、"CA"。
+        flight_number: 可选，航班号数字部分，例如 MU2397 的 "2397"。
+        limit: 返回结果数量，建议 3-10。
+    """
+    start = _log_tool_start(
+        "search_flight_options",
+        departure=departure,
+        arrival=arrival,
+        date=date,
+        airline=airline,
+        flight_number=flight_number,
+        limit=limit,
+    )
+    key = _aviationstack_key()
+    if not key:
+        result = "航班查询不可用：未配置 AVIATIONSTACK_API_KEY。"
+        _log_tool_end("search_flight_options", start, result)
+        return result
+
+    params: dict[str, object] = {
+        "access_key": key,
+        "limit": max(1, min(int(limit), 20)),
+    }
+    dep_iata = _normalize_airport_iata(departure)
+    arr_iata = _normalize_airport_iata(arrival)
+    if dep_iata:
+        params["dep_iata"] = dep_iata
+    if arr_iata:
+        params["arr_iata"] = arr_iata
+    if date:
+        params["flight_date"] = date
+    if airline:
+        params["airline_iata"] = airline.strip().upper()
+    if flight_number:
+        params["flight_number"] = flight_number.strip().upper().removeprefix((airline or "").upper())
+
+    try:
+        data = _request_json(f"{AVIATIONSTACK_BASE_URL}/flights", params=params, timeout=15)
+        if data.get("error"):
+            error = data["error"]
+            result = f"航班查询失败：{error.get('code', 'unknown')} - {error.get('message', error)}"
+            _log_tool_end("search_flight_options", start, result)
+            return result
+
+        flights = data.get("data") or []
+        if not flights:
+            result = "未查询到符合条件的航班。可尝试只填写出发/到达机场三字码，或换用当天/近期日期。"
+            _log_tool_end("search_flight_options", start, result)
+            return result
+
+        result = _format_aviationstack_flights(flights, dep_iata, arr_iata, limit)
+        _log_tool_end("search_flight_options", start, result)
+        return result
+    except requests.HTTPError as exc:
+        status_code = exc.response.status_code if exc.response is not None else ""
+        if status_code == 403 and date:
+            try:
+                fallback_params = dict(params)
+                fallback_params.pop("flight_date", None)
+                fallback_data = _request_json(f"{AVIATIONSTACK_BASE_URL}/flights", params=fallback_params, timeout=15)
+                flights = fallback_data.get("data") or []
+                if flights:
+                    result = _format_aviationstack_flights(
+                        flights,
+                        dep_iata,
+                        arr_iata,
+                        limit,
+                        note=f"提示：当前 Aviationstack 账号不支持按指定日期 {date} 查询，已自动回退为近期/实时航班结果。",
+                    )
+                    _log_tool_end("search_flight_options", start, result)
+                    return result
+            except Exception as fallback_exc:
+                print(f"Aviationstack 日期查询失败后回退也失败：{fallback_exc}")
+        result = f"航班查询暂不可用：HTTP {status_code or '未知'}。"
+        _log_tool_end("search_flight_options", start, result)
+        return result
+    except Exception as exc:
+        result = f"航班查询异常：{exc}"
+        _log_tool_end("search_flight_options", start, result)
+        return result
+
+
+@tool
 def get_public_transit_plan(
     origin: str,
     destination: str,
@@ -750,6 +1003,213 @@ def get_public_transit_plan(
     except Exception as exc:
         result = f"公共交通查询异常：{exc}"
         _log_tool_end("get_public_transit_plan", start, result)
+        return result
+
+
+@tool
+def get_walking_route(origin: str, destination: str, city: str = "") -> str:
+    """使用高德地图查询两点之间的步行路线，适合市内短距离景点、地铁站、酒店之间的步行可达性判断。
+
+    Args:
+        origin: 出发地点，例如 "宁波大学"、"天一阁"。
+        destination: 到达地点，例如 "宁波大学地铁站"、"鼓楼"。
+        city: 地点所在城市，可选；地点名称模糊时建议填写。
+    """
+    start = _log_tool_start("get_walking_route", origin=origin, destination=destination, city=city)
+    key = _amap_key()
+    if not key:
+        result = "步行路线查询不可用：未配置 AMAP_API_KEY。"
+        _log_tool_end("get_walking_route", start, result)
+        return result
+
+    try:
+        points = _resolve_route_points(origin, destination, city=city)
+        if not points:
+            result = f"步行路线查询失败：未能解析 {origin} 或 {destination} 的坐标。"
+            _log_tool_end("get_walking_route", start, result)
+            return result
+        origin_location, origin_address, destination_location, destination_address = points
+        data = _request_json(
+            f"{AMAP_BASE_URL}/direction/walking",
+            {
+                "key": key,
+                "origin": origin_location,
+                "destination": destination_location,
+                "output": "JSON",
+            },
+        )
+        paths = (data.get("route") or {}).get("paths") or []
+        if data.get("status") != "1" or not paths:
+            result = f"未查询到 {origin} 到 {destination} 的步行路线。高德返回信息：{data.get('info', '无详细说明')}"
+            _log_tool_end("get_walking_route", start, result)
+            return result
+
+        path = paths[0]
+        distance = _format_km(path.get("distance", ""))
+        duration = _format_minutes(path.get("duration", ""))
+        steps = _format_route_steps(path.get("steps") or [])
+        result = (
+            "数据源：高德地图步行路线规划\n"
+            f"路线：{origin_address} -> {destination_address}\n"
+            f"步行距离：{distance}\n"
+            f"预计步行耗时：{duration}\n"
+            f"主要步骤：{steps}\n"
+            "建议：若步行距离超过 2 公里，建议同时比较骑行、公交/地铁或网约车。"
+        )
+        _log_tool_end("get_walking_route", start, result)
+        return result
+    except Exception as exc:
+        result = f"步行路线查询异常：{exc}"
+        _log_tool_end("get_walking_route", start, result)
+        return result
+
+
+@tool
+def get_bicycling_route(origin: str, destination: str, city: str = "") -> str:
+    """使用高德地图查询两点之间的骑行路线，适合市内 1-8 公里短途移动、共享单车或骑行体验判断。
+
+    Args:
+        origin: 出发地点，例如 "宁波大学"、"天一阁"。
+        destination: 到达地点，例如 "宁波老外滩"、"鼓楼"。
+        city: 地点所在城市，可选；地点名称模糊时建议填写。
+    """
+    start = _log_tool_start("get_bicycling_route", origin=origin, destination=destination, city=city)
+    key = _amap_key()
+    if not key:
+        result = "骑行路线查询不可用：未配置 AMAP_API_KEY。"
+        _log_tool_end("get_bicycling_route", start, result)
+        return result
+
+    try:
+        points = _resolve_route_points(origin, destination, city=city)
+        if not points:
+            result = f"骑行路线查询失败：未能解析 {origin} 或 {destination} 的坐标。"
+            _log_tool_end("get_bicycling_route", start, result)
+            return result
+        origin_location, origin_address, destination_location, destination_address = points
+        data = _request_json(
+            "https://restapi.amap.com/v4/direction/bicycling",
+            {
+                "key": key,
+                "origin": origin_location,
+                "destination": destination_location,
+            },
+        )
+        paths = ((data.get("data") or {}).get("paths") or (data.get("route") or {}).get("paths") or [])
+        ok = data.get("errcode") in (None, 0) or data.get("status") == "1"
+        if not ok or not paths:
+            message = data.get("errmsg") or data.get("info") or "无详细说明"
+            result = f"未查询到 {origin} 到 {destination} 的骑行路线。高德返回信息：{message}"
+            _log_tool_end("get_bicycling_route", start, result)
+            return result
+
+        path = paths[0]
+        distance = _format_km(path.get("distance", ""))
+        duration = _format_minutes(path.get("duration", ""))
+        steps = _format_route_steps(path.get("steps") or [])
+        result = (
+            "数据源：高德地图骑行路线规划\n"
+            f"路线：{origin_address} -> {destination_address}\n"
+            f"骑行距离：{distance}\n"
+            f"预计骑行耗时：{duration}\n"
+            f"主要步骤：{steps}\n"
+            "建议：骑行前结合天气、空气质量和道路条件；雨天、夜间或携带行李时优先公交/地铁或网约车。"
+        )
+        _log_tool_end("get_bicycling_route", start, result)
+        return result
+    except requests.HTTPError as exc:
+        status_code = exc.response.status_code if exc.response is not None else ""
+        result = f"骑行路线查询暂不可用：HTTP {status_code or '未知'}。"
+        _log_tool_end("get_bicycling_route", start, result)
+        return result
+    except Exception as exc:
+        result = f"骑行路线查询异常：{exc}"
+        _log_tool_end("get_bicycling_route", start, result)
+        return result
+
+
+@tool
+def get_route_distance_matrix(origins: str, destination: str, city: str = "", travel_type: str = "driving") -> str:
+    """使用高德地图距离测量 API 比较多个出发点到同一目的地的距离/耗时。
+
+    适合回答"哪个景点离酒店近"、"从多个候选住宿点到车站多久"、"多个景点到机场的驾车距离"等问题。
+
+    Args:
+        origins: 多个出发地点，用竖线分隔，例如 "宁波大学|天一阁·月湖|宁波老外滩"。
+        destination: 目的地，例如 "宁波站"。
+        city: 地点所在城市，可选；地点名称模糊时建议填写。
+        travel_type: driving/驾车、walking/步行、straight/直线，默认 driving。
+    """
+    start = _log_tool_start(
+        "get_route_distance_matrix",
+        origins=origins,
+        destination=destination,
+        city=city,
+        travel_type=travel_type,
+    )
+    key = _amap_key()
+    if not key:
+        result = "距离矩阵查询不可用：未配置 AMAP_API_KEY。"
+        _log_tool_end("get_route_distance_matrix", start, result)
+        return result
+
+    try:
+        # Do not split on comma because coordinates use "lng,lat".
+        origin_names = [item.strip() for item in re.split(r"[|｜;；\n]+", origins or "") if item.strip()]
+        if not origin_names:
+            result = "距离矩阵查询失败：请提供至少一个出发地点。"
+            _log_tool_end("get_route_distance_matrix", start, result)
+            return result
+        origin_infos = []
+        for name in origin_names[:10]:
+            info = _amap_geocode(name, city=city)
+            if info and info.get("location"):
+                origin_infos.append((name, info))
+        destination_info = _amap_geocode(destination, city=city)
+        if not origin_infos or not destination_info or not destination_info.get("location"):
+            result = f"距离矩阵查询失败：未能解析出发点或目的地 {destination} 的坐标。"
+            _log_tool_end("get_route_distance_matrix", start, result)
+            return result
+
+        mode_label, type_code = _format_distance_matrix_type(travel_type)
+        data = _request_json(
+            f"{AMAP_BASE_URL}/distance",
+            {
+                "key": key,
+                "origins": "|".join(info["location"] for _, info in origin_infos),
+                "destination": destination_info["location"],
+                "type": type_code,
+                "output": "JSON",
+            },
+        )
+        results = data.get("results") or []
+        if data.get("status") != "1" or not results:
+            result = f"未查询到距离矩阵。高德返回信息：{data.get('info', '无详细说明')}"
+            _log_tool_end("get_route_distance_matrix", start, result)
+            return result
+
+        lines = [
+            "数据源：高德地图距离测量",
+            f"目的地：{destination_info.get('formatted_address', destination)}",
+            f"测算方式：{mode_label}",
+        ]
+        for item in results:
+            try:
+                origin_index = int(item.get("origin_id", 1)) - 1
+            except (TypeError, ValueError):
+                origin_index = 0
+            origin_name, origin_info = origin_infos[origin_index] if 0 <= origin_index < len(origin_infos) else origin_infos[0]
+            distance = _format_km(item.get("distance", ""))
+            duration = _format_minutes(item.get("duration", "")) if item.get("duration") else "未返回"
+            lines.append(
+                f"- {origin_name}（{origin_info.get('formatted_address', origin_name)}） -> {destination}：{distance}，预计耗时 {duration}"
+            )
+        result = "\n".join(lines)
+        _log_tool_end("get_route_distance_matrix", start, result)
+        return result
+    except Exception as exc:
+        result = f"距离矩阵查询异常：{exc}"
+        _log_tool_end("get_route_distance_matrix", start, result)
         return result
 
 
@@ -951,7 +1411,11 @@ TRAVEL_TOOLS = [
     get_weather_alerts,
     calculate_trip_budget,
     get_transport_advice,
+    search_flight_options,
     get_public_transit_plan,
+    get_walking_route,
+    get_bicycling_route,
+    get_route_distance_matrix,
     search_travel_pois,
     search_nearby_pois,
     get_place_location,

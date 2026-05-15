@@ -11,6 +11,7 @@ const keyStatus = document.querySelector("#keyStatus");
 const amapStatus = document.querySelector("#amapStatus");
 const qweatherStatus = document.querySelector("#qweatherStatus");
 const trainStatus = document.querySelector("#trainStatus");
+const aviationStatus = document.querySelector("#aviationStatus");
 const conversationListEl = document.querySelector("#conversationList");
 const newChatBtn = document.querySelector("#newChatBtn");
 const CURRENT_CONVERSATION_KEY = "travel_agent_current_conversation_id";
@@ -420,6 +421,44 @@ function formatTraceTime(item) {
   return "";
 }
 
+const TRACE_TOOL_INFO = {
+  get_weather_info: { label: "天气", title: "查询天气", desc: "获取实时天气和未来预报，判断出行舒适度。" },
+  get_air_quality_info: { label: "空气", title: "查询空气质量", desc: "判断户外活动、骑行和老人儿童出行风险。" },
+  get_weather_alerts: { label: "预警", title: "查询天气预警", desc: "检查暴雨、大风、高温等灾害预警。" },
+  calculate_trip_budget: { label: "预算", title: "计算预算", desc: "按人数、天数、住宿、餐饮和门票估算费用。" },
+  get_transport_advice: { label: "驾车", title: "规划驾车路线", desc: "查询驾车距离、耗时和过路费参考。" },
+  search_flight_options: { label: "航班", title: "查询航班", desc: "查询航班时刻、机场、航站楼和状态。" },
+  get_public_transit_plan: { label: "公交", title: "规划公交/地铁", desc: "查询市内公共交通换乘方案。" },
+  get_walking_route: { label: "步行", title: "规划步行路线", desc: "判断短距离步行可达性。" },
+  get_bicycling_route: { label: "骑行", title: "规划骑行路线", desc: "判断共享单车或骑行路线是否合适。" },
+  get_route_distance_matrix: { label: "距离", title: "比较距离耗时", desc: "比较多个地点到同一目的地的距离和耗时。" },
+  search_travel_pois: { label: "POI", title: "搜索目的地地点", desc: "查询景点、餐饮、商圈、酒店等 POI。" },
+  search_nearby_pois: { label: "周边", title: "搜索周边地点", desc: "围绕指定地点按半径查询餐饮、住宿或地铁站。" },
+  get_place_location: { label: "定位", title: "解析地点位置", desc: "核验地点地址和经纬度。" },
+  get_map_marker_link: { label: "地图", title: "生成地图链接", desc: "生成可打开的高德地图标记链接。" },
+  search_train_tickets: { label: "火车", title: "查询火车余票", desc: "查询真实车次、时刻、余票和票价。" },
+  search_interline_train_tickets: { label: "中转", title: "查询中转火车", desc: "查询需要换乘的火车/高铁中转方案。" },
+  get_train_route: { label: "经停", title: "查询列车经停", desc: "查询指定车次的经停站和时刻表。" },
+};
+
+function traceToolInfo(tool) {
+  return TRACE_TOOL_INFO[tool] || { label: "工具", title: `调用工具：${tool || "unknown"}`, desc: "调用外部工具补充真实数据。" };
+}
+
+function traceArgsSummary(args) {
+  if (!args || typeof args !== "object") return "";
+  const preferred = [
+    "city", "date", "origin", "destination", "origin_city", "destination_city",
+    "departure", "arrival", "from_city", "to_city", "place", "keyword",
+    "origins", "train_code", "train_filter_flags", "limit",
+  ];
+  const chips = preferred
+    .filter(key => args[key] !== undefined && args[key] !== "" && args[key] !== null)
+    .slice(0, 5)
+    .map(key => `${key}: ${args[key]}`);
+  return chips.map(chip => `<span>${escapeHtml(String(chip))}</span>`).join("");
+}
+
 function summarizeTrace(trace) {
   const toolCount = trace.filter((item) => item.type === "tool_call").length;
   const llmCount = trace.filter((item) => item.type === "llm_response").length;
@@ -431,7 +470,14 @@ function summarizeTrace(trace) {
     runningCount ? `${runningCount} 进行中` : "",
     errorCount ? `${errorCount} 异常` : "",
   ].filter(Boolean).join("，");
-  return trace.length ? `执行过程：${status}` : "执行过程：等待智能体行动";
+  const toolNames = trace
+    .filter((item) => item.type === "tool_call")
+    .map((item) => traceToolInfo(item.tool).title)
+    .filter(Boolean);
+  const mainFlow = [...new Set(toolNames)].slice(0, 3).join(" → ");
+  return trace.length
+    ? `执行过程：${status}${mainFlow ? `｜${mainFlow}` : ""}`
+    : "执行过程：等待智能体行动";
 }
 
 function renderTrace(trace, expanded = false) {
@@ -451,22 +497,25 @@ function renderTrace(trace, expanded = false) {
     const status = item.status || (item.result ? "success" : "pending");
     row.className = `trace-item ${item.type} ${traceStatusClass(status)}`;
     const timeText = formatTraceTime(item);
+    const info = traceToolInfo(item.tool);
     const titleText = item.type === "llm_response"
-      ? `模型响应：${item.model || "unknown"}`
+      ? `模型整合结果：${item.model || "unknown"}`
       : item.type === "tool_result"
-        ? `工具返回：${item.tool || "unknown"}`
-        : `调用工具：${item.tool || "unknown"}`;
+        ? `${info.title}完成`
+        : info.title;
 
     const args = JSON.stringify(item.args || {}, null, 2);
     const usage = summarizeUsage(item.usage);
     row.innerHTML = `
       <div class="trace-title">
-        <span>${traceLabel(item)}</span>
+        <span>${item.type === "llm_response" ? "模型" : escapeHtml(info.label)}</span>
         <strong>${escapeHtml(titleText)}</strong>
         <em class="trace-status">${traceStatusLabel(status)}</em>
         ${timeText ? `<em class="trace-time">${escapeHtml(timeText)}</em>` : ""}
       </div>
-      ${item.type === "tool_call" ? `<pre>${escapeHtml(args)}</pre>` : ""}
+      ${item.type === "tool_call" ? `<p class="trace-desc">${escapeHtml(info.desc)}</p>` : ""}
+      ${item.type === "tool_call" && traceArgsSummary(item.args) ? `<div class="trace-arg-chips">${traceArgsSummary(item.args)}</div>` : ""}
+      ${item.type === "tool_call" ? `<details class="trace-raw"><summary>查看原始参数</summary><pre>${escapeHtml(args)}</pre></details>` : ""}
       ${item.type === "llm_response" && usage ? `<p>${escapeHtml(usage)}</p>` : ""}
       ${item.result ? `<p><strong>返回：</strong>${escapeHtml(compactResult(item.result))}</p>` : ""}
       ${item.type === "tool_call" && !item.result ? '<p class="trace-pending">工具运行中，等待返回结果</p>' : ""}
@@ -596,6 +645,7 @@ async function loadStatus() {
         : "未配置";
     }
     if (trainStatus) trainStatus.textContent = data.train_tools_available ? "可用" : "未检测到";
+    if (aviationStatus) aviationStatus.textContent = data.aviationstack_key_loaded ? "已配置" : "未配置";
   } catch {
     modelName.textContent = "读取失败";
     thinkingModelName.textContent = "读取失败";
@@ -603,6 +653,7 @@ async function loadStatus() {
     if (amapStatus) amapStatus.textContent = "未知";
     if (qweatherStatus) qweatherStatus.textContent = "未知";
     if (trainStatus) trainStatus.textContent = "未知";
+    if (aviationStatus) aviationStatus.textContent = "未知";
   }
 }
 
@@ -660,14 +711,14 @@ formEl.addEventListener("submit", async (event) => {
         } else if (data.event === "trace") {
           liveTrace = Array.isArray(data.trace) ? data.trace : liveTrace;
           const item = data.item || {};
-          if (data.message) {
-            latestStatus = data.message;
-          } else if (data.phase === "tool_call" || item.type === "tool_call") {
-            latestStatus = `正在调用工具：${item.tool || "unknown"}`;
+          if (data.phase === "tool_call" || item.type === "tool_call") {
+            latestStatus = `正在${traceToolInfo(item.tool).title}`;
           } else if (data.phase === "tool_result" || item.type === "tool_result") {
-            latestStatus = `工具结果已返回：${item.tool || "unknown"}`;
+            latestStatus = `${traceToolInfo(item.tool).title}已完成`;
           } else if (data.phase === "llm_response" || item.type === "llm_response") {
             latestStatus = `模型阶段完成：${item.model || "unknown"}`;
+          } else if (data.message) {
+            latestStatus = data.message;
           } else {
             latestStatus = "智能体继续整合信息";
           }
@@ -765,6 +816,9 @@ function buildStructuredCards(data) {
   if (data.weather && data.weather.length) {
     html += renderWeatherCards(data.weather);
   }
+  if (data.weather_alerts && data.weather_alerts.length) {
+    html += renderWeatherAlertCards(data.weather_alerts);
+  }
   if (data.daily_itinerary && data.daily_itinerary.length) {
     html += renderItineraryTimeline(data.daily_itinerary);
   }
@@ -803,6 +857,40 @@ function renderWeatherCards(weatherList) {
   return `<div class="card-section"><h3 class="card-section-title">天气信息</h3><div class="weather-card-grid">${cards}</div></div>`;
 }
 
+function weatherAlertClass(alert) {
+  const text = `${alert.severity || ""} ${alert.level || ""} ${alert.title || ""} ${alert.status || ""}`.toLowerCase();
+  if (text.includes("red") || text.includes("红") || text.includes("严重")) return "danger";
+  if (text.includes("orange") || text.includes("橙") || text.includes("较重")) return "orange";
+  if (text.includes("yellow") || text.includes("黄") || text.includes("一般")) return "yellow";
+  if (text.includes("blue") || text.includes("蓝")) return "blue";
+  if (text.includes("no_active") || text.includes("无预警")) return "clear";
+  if (text.includes("unavailable") || text.includes("不可用")) return "muted";
+  return "default";
+}
+
+function renderWeatherAlertCards(alerts) {
+  const cards = alerts.map(alert => {
+    const kind = weatherAlertClass(alert);
+    const title = alert.title || (alert.status === "no_active" ? "当前无天气灾害预警" : "天气预警");
+    return `
+      <div class="weather-alert-card alert-${kind}">
+        <div class="weather-alert-head">
+          <span class="weather-alert-badge">${escapeHtml(alert.severity || alert.level || alert.type || "预警")}</span>
+          <span class="weather-alert-city">${escapeHtml(alert.city || "")}</span>
+        </div>
+        <h4>${escapeHtml(title)}</h4>
+        <div class="weather-alert-meta">
+          ${alert.type ? `<span>${escapeHtml(alert.type)}</span>` : ""}
+          ${alert.pub_time ? `<span>${escapeHtml(alert.pub_time)}</span>` : ""}
+          ${alert.data_source ? `<span>${escapeHtml(alert.data_source)}</span>` : ""}
+        </div>
+        ${alert.text ? `<p>${escapeHtml(alert.text)}</p>` : ""}
+      </div>
+    `;
+  }).join("");
+  return `<div class="card-section"><h3 class="card-section-title">天气预警</h3><div class="weather-alert-grid">${cards}</div></div>`;
+}
+
 function renderItineraryTimeline(itinerary) {
   const items = itinerary.map(d => `
     <div class="timeline-item">
@@ -818,18 +906,100 @@ function renderItineraryTimeline(itinerary) {
   return `<div class="card-section"><h3 class="card-section-title">每日行程</h3><div class="timeline">${items}</div></div>`;
 }
 
-function renderTransportCards(transportList) {
-  const cards = transportList.map(t => `
-    <div class="transport-card">
-      <span class="transport-mode-badge">${escapeHtml(t.mode || "")}</span>
-      <div class="transport-route">${escapeHtml(t.from || "")} → ${escapeHtml(t.to || "")}</div>
-      <div class="transport-details">
-        <div class="transport-detail"><span>时长</span><span>${escapeHtml(t.duration || "--")}</span></div>
-        <div class="transport-detail"><span>预估费用</span><span>${escapeHtml(t.cost_estimate || "--")}</span></div>
+function transportCategory(option) {
+  const raw = `${option.category || ""} ${option.mode || ""} ${option.notes || ""}`.toLowerCase();
+  const text = `${option.category || ""} ${option.mode || ""} ${option.notes || ""}`;
+  if (raw.includes("interline") || text.includes("中转") || (Array.isArray(option.legs) && option.legs.length > 1)) return "interline";
+  if (raw.includes("flight") || text.includes("航班") || /^[A-Z]{2}\s?\d+/.test(option.mode || "")) return "flight";
+  if (raw.includes("train") || text.includes("高铁") || text.includes("动车") || /^[GDCZTK]\d+/.test(option.mode || "")) return "train";
+  if (raw.includes("transit") || text.includes("地铁") || text.includes("公交")) return "transit";
+  if (raw.includes("walking") || text.includes("步行")) return "walking";
+  if (raw.includes("bicycling") || text.includes("骑行")) return "bicycling";
+  if (raw.includes("driving") || text.includes("驾车") || text.includes("自驾")) return "driving";
+  return "generic";
+}
+
+function transportIcon(category) {
+  return {
+    flight: "航",
+    train: "铁",
+    interline: "转",
+    transit: "乘",
+    walking: "步",
+    bicycling: "骑",
+    driving: "驾",
+    generic: "行",
+  }[category] || "行";
+}
+
+function transportLabel(category) {
+  return {
+    flight: "航班",
+    train: "火车",
+    interline: "中转火车",
+    transit: "公交地铁",
+    walking: "步行",
+    bicycling: "骑行",
+    driving: "驾车",
+    generic: "交通",
+  }[category] || "交通";
+}
+
+function transportMetaChips(option) {
+  const chips = [];
+  if (option.data_source) chips.push(option.data_source);
+  if (option.status) chips.push(option.status);
+  if (option.departure_time || option.arrival_time) {
+    chips.push(`${option.departure_time || "--"} → ${option.arrival_time || "--"}`);
+  }
+  return chips.map(chip => `<span>${escapeHtml(String(chip))}</span>`).join("");
+}
+
+function renderTransportLegs(legs) {
+  if (!Array.isArray(legs) || !legs.length) return "";
+  const items = legs.map((leg, index) => `
+    <div class="transport-leg">
+      <div class="transport-leg-index">${index + 1}</div>
+      <div class="transport-leg-body">
+        <div class="transport-leg-title">
+          <strong>${escapeHtml(leg.mode || `第 ${index + 1} 段`)}</strong>
+          ${leg.status ? `<span>${escapeHtml(leg.status)}</span>` : ""}
+        </div>
+        <div class="transport-leg-route">${escapeHtml(leg.from || "")} → ${escapeHtml(leg.to || "")}</div>
+        <div class="transport-leg-meta">
+          ${leg.departure_time || leg.arrival_time ? `<span>${escapeHtml(leg.departure_time || "--")} → ${escapeHtml(leg.arrival_time || "--")}</span>` : ""}
+          ${leg.duration ? `<span>${escapeHtml(leg.duration)}</span>` : ""}
+          ${leg.cost_estimate ? `<span>${escapeHtml(leg.cost_estimate)}</span>` : ""}
+        </div>
+        ${leg.notes ? `<div class="transport-leg-notes">${escapeHtml(leg.notes)}</div>` : ""}
       </div>
-      ${t.notes ? `<div class="transport-notes">${escapeHtml(t.notes)}</div>` : ""}
     </div>
   `).join("");
+  return `<div class="transport-legs">${items}</div>`;
+}
+
+function renderTransportCards(transportList) {
+  const cards = transportList.map(t => {
+    const category = transportCategory(t);
+    return `
+    <div class="transport-card transport-${category}">
+      <div class="transport-card-head">
+        <span class="transport-icon">${transportIcon(category)}</span>
+        <div>
+          <span class="transport-mode-badge">${escapeHtml(t.mode || transportLabel(category))}</span>
+          <div class="transport-type-label">${transportLabel(category)}</div>
+        </div>
+      </div>
+      <div class="transport-route">${escapeHtml(t.from || "")} → ${escapeHtml(t.to || "")}</div>
+      ${transportMetaChips(t) ? `<div class="transport-meta-chips">${transportMetaChips(t)}</div>` : ""}
+      <div class="transport-details">
+        <div class="transport-detail"><span>时长</span><span>${escapeHtml(t.duration || "--")}</span></div>
+        <div class="transport-detail"><span>费用/票价</span><span>${escapeHtml(t.cost_estimate || "--")}</span></div>
+      </div>
+      ${renderTransportLegs(t.legs)}
+      ${t.notes ? `<div class="transport-notes">${escapeHtml(t.notes)}</div>` : ""}
+    </div>
+  `}).join("");
   return `<div class="card-section"><h3 class="card-section-title">交通方案</h3><div class="transport-grid">${cards}</div></div>`;
 }
 

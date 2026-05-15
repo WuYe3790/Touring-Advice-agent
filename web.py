@@ -79,6 +79,7 @@ def status():
             "qweather_key_loaded": bool(os.getenv("QWEATHER_API_KEY", "").strip()),
             "qweather_host_loaded": bool(os.getenv("QWEATHER_API_HOST", "").strip()),
             "train_tools_available": is_train_tools_available(),
+            "aviationstack_key_loaded": bool(os.getenv("AVIATIONSTACK_API_KEY", "").strip()),
         }
     )
 
