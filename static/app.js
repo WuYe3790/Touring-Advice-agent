@@ -154,6 +154,13 @@ function resetDraggableMap(viewport) {
   updateDraggableMap(viewport);
 }
 
+function setMapLoadState(image, state) {
+  const viewport = image?.closest(".poi-map-viewport");
+  if (!viewport) return;
+  viewport.classList.toggle("map-error", state === "error");
+  viewport.classList.toggle("map-loaded", state === "loaded");
+}
+
 function initDraggableMaps(root = document) {
   root.querySelectorAll("[data-draggable-map]").forEach((viewport) => {
     if (viewport.dataset.dragReady === "true") return;
@@ -222,26 +229,77 @@ function flattenPoiItems(categories = []) {
   );
 }
 
-function matchItineraryPois(day, poiItems) {
+function compactPlaceText(text) {
+  return String(text || "")
+    .replace(/[·\-—_（）()【】\[\]{}<>《》,，.。:：;；!！?？\s]/g, "")
+    .toLowerCase();
+}
+
+function poiKeywordScore(dayText, item) {
+  const name = compactPlaceText(item.name);
+  const type = compactPlaceText(item.type);
+  const address = compactPlaceText(item.address);
+  if (!name || !item.location) return 0;
+  let score = 0;
+  if (dayText.includes(name)) score += 10;
+  if (name.includes(dayText) && dayText.length >= 2) score += 4;
+  for (let size = Math.min(name.length, 4); size >= 2; size -= 1) {
+    for (let index = 0; index <= name.length - size; index += 1) {
+      const part = name.slice(index, index + size);
+      if (dayText.includes(part)) {
+        score += size;
+        break;
+      }
+    }
+    if (score > 0) break;
+  }
+  if (type && dayText.includes(type)) score += 1;
+  if (address && dayText.includes(address.slice(0, 4))) score += 1;
+  return score;
+}
+
+function fallbackPoisForDay(dayIndex, dayCount, poiItems) {
+  const located = poiItems.filter((item) => item.location);
+  if (!located.length) return [];
+  const perDay = Math.max(2, Math.ceil(Math.min(located.length, POI_MARKER_LABELS.length) / Math.max(1, dayCount)));
+  const start = (dayIndex * perDay) % located.length;
+  const selected = [];
+  for (let offset = 0; offset < located.length && selected.length < perDay; offset += 1) {
+    selected.push(located[(start + offset) % located.length]);
+  }
+  return selected;
+}
+
+function matchItineraryPois(day, poiItems, dayIndex = 0, dayCount = 1) {
   const haystack = [
     day.title || "",
     ...(Array.isArray(day.activities) ? day.activities : []),
     ...(Array.isArray(day.meals) ? day.meals : []),
     day.accommodation || "",
   ].join(" ");
+  const dayText = compactPlaceText(haystack);
   const seen = new Set();
-  return poiItems.filter((item) => {
-    if (!item.name || !item.location || seen.has(item.name)) return false;
-    const matched = haystack.includes(item.name) || item.name.includes(day.title || "");
-    if (matched) seen.add(item.name);
-    return matched;
-  }).slice(0, POI_MARKER_LABELS.length);
+  const matched = poiItems
+    .map((item) => ({ item, score: poiKeywordScore(dayText, item) }))
+    .filter(({ item, score }) => item.location && score > 0 && !seen.has(item.name) && seen.add(item.name))
+    .sort((a, b) => b.score - a.score)
+    .map(({ item }) => item)
+    .slice(0, POI_MARKER_LABELS.length);
+  if (matched.length) return matched;
+  return fallbackPoisForDay(dayIndex, dayCount, poiItems);
 }
 
 function renderMiniMap(items, label = "地图") {
   const locations = items.map((item) => item.location).filter(Boolean);
   const mapUrl = buildMapImageUrl(locations, { size: "900*420" });
-  if (!mapUrl) return "";
+  if (!mapUrl) {
+    return `
+      <div class="mini-map-block mini-map-empty">
+        <div class="mini-map-empty-title">${escapeHtml(label)}</div>
+        <div class="mini-map-note">当前行程缺少可用坐标，暂不能生成地图；补充 POI 坐标后会自动展示。</div>
+      </div>
+    `;
+  }
   const legend = items.map((item, index) => `
     <span><b>${markerLabel(index)}</b>${escapeHtml(item.name || `${label}${index + 1}`)}</span>
   `).join("");
@@ -250,12 +308,15 @@ function renderMiniMap(items, label = "地图") {
       <div class="poi-map-viewport mini-map" data-draggable-map>
         <div class="poi-map-toolbar">
           <span>${escapeHtml(label)}</span>
+          <button type="button" class="poi-map-retry">重试</button>
           <button type="button" class="poi-map-reset">重置视角</button>
           <a class="poi-map-open-link" href="${escapeHtml(mapUrl)}" target="_blank" rel="noreferrer">打开图像</a>
         </div>
-        <img class="poi-map-preview" src="${escapeHtml(mapUrl)}" alt="${escapeHtml(label)}" loading="lazy" referrerpolicy="no-referrer" draggable="false" onerror="this.closest('.poi-map-viewport').hidden=true">
+        <img class="poi-map-preview" src="${escapeHtml(mapUrl)}" alt="${escapeHtml(label)}" loading="eager" referrerpolicy="no-referrer" draggable="false" onload="setMapLoadState(this, 'loaded')" onerror="setMapLoadState(this, 'error')">
+        <div class="poi-map-fallback">地图暂时加载失败，可点击重试或打开图像查看。</div>
       </div>
       <div class="poi-map-legend">${legend}</div>
+      <div class="mini-map-note">地图基于行程文本和推荐地点自动关联，仅展示相对位置关系。</div>
     </div>
   `;
 }
@@ -1238,6 +1299,18 @@ messagesEl.addEventListener("click", (event) => {
     return;
   }
 
+  const retryMapButton = event.target.closest(".poi-map-retry");
+  if (retryMapButton) {
+    const viewport = retryMapButton.closest("[data-draggable-map]");
+    const image = viewport?.querySelector(".poi-map-preview");
+    if (image) {
+      setMapLoadState(image, "loading");
+      const cleanSrc = image.src.split("&_retry=")[0];
+      image.src = `${cleanSrc}&_retry=${Date.now()}`;
+    }
+    return;
+  }
+
   const filterButton = event.target.closest(".poi-filter-chip");
   if (filterButton) {
     filterButton.classList.toggle("active");
@@ -1335,7 +1408,7 @@ function buildStructuredCards(data) {
   if (data.transport_options && data.transport_options.length) {
     html += renderTransportCards(data.transport_options);
   }
-  if (data.budget && typeof data.budget.total === "number") {
+  if (data.budget && typeof data.budget.total === "number" && (data.budget.total > 0 || data.budget.notes || Object.keys(data.budget.breakdown || {}).length)) {
     html += renderBudgetCard(data.budget);
   }
   if (data.tips && data.tips.length) {
@@ -1404,7 +1477,7 @@ function renderWeatherAlertCards(alerts) {
 
 function renderItineraryTimeline(itinerary, poiCategories = []) {
   const poiItems = flattenPoiItems(poiCategories);
-  const items = itinerary.map(d => `
+  const items = itinerary.map((d, index) => `
     <div class="timeline-item">
       <div class="timeline-marker">D${escapeHtml(String(d.day))}</div>
       <div class="timeline-content">
@@ -1412,7 +1485,7 @@ function renderItineraryTimeline(itinerary, poiCategories = []) {
         ${d.activities && d.activities.length ? `<p class="timeline-activities"><strong>活动</strong> ${d.activities.map(a => escapeHtml(a)).join(" → ")}</p>` : ""}
         ${d.meals && d.meals.length ? `<p class="timeline-meals"><strong>餐饮</strong> ${d.meals.map(m => escapeHtml(m)).join("、")}</p>` : ""}
         ${d.accommodation ? `<p class="timeline-accommodation"><strong>住宿</strong> ${escapeHtml(d.accommodation)}</p>` : ""}
-        ${renderMiniMap(matchItineraryPois(d, poiItems), `Day ${escapeHtml(String(d.day))} 地点关系`)}
+        ${renderMiniMap(matchItineraryPois(d, poiItems, index, itinerary.length), `Day ${escapeHtml(String(d.day))} 地点关系`)}
       </div>
     </div>
   `).join("");
@@ -1573,6 +1646,52 @@ function renderTipsList(tips) {
   return `<div class="card-section"><h3 class="card-section-title">出行提示</h3><ul class="tips-list">${items}</ul></div>`;
 }
 
+function renderDataCredibility(data) {
+  const sources = new Map();
+  const limits = [];
+
+  (data.weather || []).forEach((item) => {
+    sources.set(item.data_source || "和风天气/高德天气", "天气信息");
+  });
+  (data.weather_alerts || []).forEach((item) => {
+    if (item.data_source) sources.set(item.data_source, "天气预警");
+    if (item.status === "unavailable") limits.push("天气预警或空气质量可能受接口权限影响。");
+  });
+  (data.transport_options || []).forEach((item) => {
+    if (item.data_source) sources.set(item.data_source, "交通方案");
+    if (/Aviationstack/i.test(`${item.data_source || ""} ${item.notes || ""}`)) {
+      limits.push("航班信息来自 Aviationstack，仅作时刻/状态参考，不包含真实票价。");
+    }
+    if (/12306/.test(`${item.data_source || ""} ${item.notes || ""}`)) {
+      sources.set("12306", "火车票/中转查询");
+    }
+    if (/高德|amap/i.test(`${item.data_source || ""} ${item.notes || ""}`)) {
+      sources.set("高德地图", "路线与地点");
+    }
+  });
+  (data.poi_recommendations || []).forEach((category) => {
+    if ((category.items || []).length) sources.set("高德地图", "POI 地点推荐");
+  });
+  if (data.budget && typeof data.budget.total === "number") {
+    sources.set("本地预算计算", "预算估算");
+    if (data.budget.notes) limits.push("预算为估算值，真实价格以购票、酒店和商家平台为准。");
+  }
+
+  const sourceItems = [...sources.entries()].map(([source, usage]) => `
+    <span><strong>${escapeHtml(source)}</strong>${escapeHtml(usage)}</span>
+  `).join("");
+  const uniqueLimits = [...new Set(limits)].slice(0, 4);
+  if (!sourceItems && !uniqueLimits.length) return "";
+
+  return `
+    <div class="card-section credibility-card">
+      <h3 class="card-section-title">数据可信度</h3>
+      ${sourceItems ? `<div class="credibility-sources">${sourceItems}</div>` : ""}
+      ${uniqueLimits.length ? `<ul class="credibility-notes">${uniqueLimits.map((note) => `<li>${escapeHtml(note)}</li>`).join("")}</ul>` : ""}
+    </div>
+  `;
+}
+
 function renderPoiCards(categories) {
   if (!categories || !categories.length) return "";
   const sections = categories.map((cat, catIndex) => {
@@ -1639,10 +1758,12 @@ function renderPoiCards(categories) {
           <div class="poi-map-viewport" data-draggable-map>
             <div class="poi-map-toolbar">
               <span>拖动查看周边位置关系</span>
+              <button type="button" class="poi-map-retry">重试</button>
               <button type="button" class="poi-map-reset">重置视角</button>
               <a class="poi-map-open-link" href="${escapeHtml(mapUrl)}" target="_blank" rel="noreferrer">打开图像</a>
             </div>
-            <img class="poi-map-preview" src="${escapeHtml(mapUrl)}" alt="${escapeHtml(cat.category || "地点")}地图预览" loading="lazy" referrerpolicy="no-referrer" draggable="false" onerror="this.closest('.poi-map-viewport').hidden=true">
+            <img class="poi-map-preview" src="${escapeHtml(mapUrl)}" alt="${escapeHtml(cat.category || "地点")}地图预览" loading="lazy" referrerpolicy="no-referrer" draggable="false" onload="setMapLoadState(this, 'loaded')" onerror="setMapLoadState(this, 'error')">
+            <div class="poi-map-fallback">地图暂时加载失败，可点击重试或打开图像查看。</div>
           </div>
         ` : ""}
         ${mapLegend}

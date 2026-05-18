@@ -1089,6 +1089,35 @@ textarea {
   line-height: 1.55;
 }
 
+.mini-map-block {
+  margin-top: 10px;
+}
+
+.mini-map {
+  height: clamp(180px, 26vh, 280px);
+}
+
+.mini-map-note {
+  margin-top: -2px;
+  color: #98a2b3;
+  font-size: 11px;
+  line-height: 1.4;
+}
+
+.mini-map-empty {
+  padding: 12px;
+  border: 1px dashed var(--line);
+  border-radius: 12px;
+  background: #f8fafc;
+}
+
+.mini-map-empty-title {
+  margin-bottom: 4px;
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 800;
+}
+
 /* Transport Cards */
 .transport-grid {
   display: flex;
@@ -1373,6 +1402,44 @@ textarea {
   flex-shrink: 0;
 }
 
+.credibility-card {
+  border-top: 1px solid var(--line);
+  padding-top: 12px;
+}
+
+.credibility-sources {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.credibility-sources span {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 9px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: #f8fafc;
+  color: #667085;
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.credibility-sources strong {
+  color: var(--text);
+}
+
+.credibility-notes {
+  display: grid;
+  gap: 5px;
+  margin: 10px 0 0;
+  padding-left: 18px;
+  color: #667085;
+  font-size: 12px;
+  line-height: 1.55;
+}
+
 /* POI Cards */
 .poi-categories {
   display: grid;
@@ -1465,6 +1532,27 @@ textarea {
   transform: translate(-50%, -50%);
   will-change: transform;
   pointer-events: none;
+}
+
+.poi-map-fallback {
+  position: absolute;
+  inset: 0;
+  display: none;
+  place-items: center;
+  padding: 56px 18px 18px;
+  background: rgba(248, 250, 252, 0.92);
+  color: #667085;
+  font-size: 13px;
+  text-align: center;
+  line-height: 1.5;
+}
+
+.poi-map-viewport.map-error .poi-map-fallback {
+  display: grid;
+}
+
+.poi-map-viewport.map-error .poi-map-preview {
+  opacity: 0.18;
 }
 
 .poi-map-legend {
