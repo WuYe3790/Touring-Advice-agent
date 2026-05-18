@@ -247,6 +247,17 @@ def _format_distance_matrix_type(travel_type: str) -> tuple[str, int]:
     return "驾车", 1
 
 
+def _traffic_status_label(value: object) -> str:
+    text = _poi_scalar(value, "未知")
+    return {
+        "0": "未知",
+        "1": "畅通",
+        "2": "缓行",
+        "3": "拥堵",
+        "4": "严重拥堵",
+    }.get(text, text)
+
+
 def _city_name_from_geocode(info: dict | None, fallback: str) -> str:
     if not info:
         return fallback
@@ -1214,6 +1225,72 @@ def get_route_distance_matrix(origins: str, destination: str, city: str = "", tr
 
 
 @tool
+def get_traffic_status(place: str, city: str = "", radius: int = 3000) -> str:
+    """使用高德地图查询某地点周边实时交通态势，适合自驾、打车、机场/车站接驳和城市拥堵风险判断。
+
+    Args:
+        place: 需要查询路况的中心地点，例如 "宁波大学"、"郑州东站"、"杭州西湖"。
+        city: 地点所在城市，可选；地点名称模糊时建议填写。
+        radius: 查询半径，单位米，建议 1000-5000。
+    """
+    start = _log_tool_start("get_traffic_status", place=place, city=city, radius=radius)
+    key = _amap_key()
+    if not key:
+        result = "实时路况查询不可用：未配置 AMAP_API_KEY。"
+        _log_tool_end("get_traffic_status", start, result)
+        return result
+
+    try:
+        center_info = _amap_geocode(place or city, city=city)
+        if not center_info or not center_info.get("location"):
+            result = f"实时路况查询失败：未能解析 {place or city} 的坐标。"
+            _log_tool_end("get_traffic_status", start, result)
+            return result
+
+        safe_radius = max(500, min(int(radius), 5000))
+        data = _request_json(
+            f"{AMAP_BASE_URL}/traffic/status/circle",
+            {
+                "key": key,
+                "location": center_info["location"],
+                "radius": safe_radius,
+                "extensions": "all",
+                "output": "JSON",
+            },
+        )
+        traffic = data.get("trafficinfo") or {}
+        if data.get("status") != "1" or not traffic:
+            result = f"未查询到 {place} 周边实时路况。高德返回信息：{data.get('info', '无详细说明')}"
+            _log_tool_end("get_traffic_status", start, result)
+            return result
+
+        evaluation = traffic.get("evaluation") or {}
+        roads = traffic.get("roads") or []
+        lines = [
+            "数据源：高德地图实时交通态势",
+            f"中心地点：{center_info.get('formatted_address', place or city)}",
+            f"查询半径：{safe_radius}米",
+            f"整体路况：{_traffic_status_label(evaluation.get('status', '未知'))}",
+            f"路况说明：{evaluation.get('description', '无说明')}",
+        ]
+        if roads:
+            lines.append("周边重点道路：")
+            for index, road in enumerate(roads[:6], start=1):
+                lines.append(
+                    f"{index}. {road.get('name', '未知道路')}："
+                    f"{_traffic_status_label(road.get('status', '未知'))}，速度 {road.get('speed', '未知')} km/h，"
+                    f"方向 {road.get('direction', '未知')}"
+                )
+        result = "\n".join(lines)
+        _log_tool_end("get_traffic_status", start, result)
+        return result
+    except Exception as exc:
+        result = f"实时路况查询异常：{exc}"
+        _log_tool_end("get_traffic_status", start, result)
+        return result
+
+
+@tool
 def search_travel_pois(city: str, keyword: str = "景点", limit: int = 8) -> str:
     """使用高德地图搜索目的地的景点、餐饮、商圈、酒店等 POI，用于生成更真实的行程推荐。
 
@@ -1416,6 +1493,7 @@ TRAVEL_TOOLS = [
     get_walking_route,
     get_bicycling_route,
     get_route_distance_matrix,
+    get_traffic_status,
     search_travel_pois,
     search_nearby_pois,
     get_place_location,

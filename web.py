@@ -4,6 +4,8 @@ import os
 import sys
 import time
 
+import requests
+from dotenv import load_dotenv
 
 PROJECT_ROOT = Path(__file__).resolve().parent
 CACHE_DIR = PROJECT_ROOT / ".cache"
@@ -37,7 +39,54 @@ from travel_agent.storage import (  # noqa: E402
 
 
 app = Flask(__name__, template_folder="templates", static_folder="static")
+load_dotenv()
 init_db()
+
+AMAP_BASE_URL = "https://restapi.amap.com/v3"
+
+
+def amap_key() -> str:
+    return os.getenv("AMAP_API_KEY", "").strip()
+
+
+def amap_request(path: str, params: dict, timeout: int = 10) -> dict:
+    key = amap_key()
+    if not key:
+        raise RuntimeError("未配置 AMAP_API_KEY")
+    clean_params = {k: v for k, v in params.items() if v not in ("", None)}
+    clean_params["key"] = key
+    response = requests.get(f"{AMAP_BASE_URL}{path}", params=clean_params, timeout=timeout)
+    response.raise_for_status()
+    return response.json()
+
+
+def public_client_context(payload: dict) -> dict:
+    context = payload.get("client_context")
+    return context if isinstance(context, dict) else {}
+
+
+def build_client_context_prompt(context: dict) -> str:
+    if not context:
+        return ""
+    city = str(context.get("city") or "").strip()
+    province = str(context.get("province") or "").strip()
+    district = str(context.get("district") or "").strip()
+    address = str(context.get("address") or "").strip()
+    location = str(context.get("location") or "").strip()
+    source = str(context.get("source") or "").strip()
+    if not any((city, province, district, address, location)):
+        return ""
+    lines = ["当前用户位置上下文（来自前端定位/高德地图）："]
+    if province or city or district:
+        lines.append(f"- 默认出发区域：{province}{city}{district}")
+    if address:
+        lines.append(f"- 默认出发地址：{address}")
+    if location:
+        lines.append(f"- 默认出发坐标：{location}")
+    if source:
+        lines.append(f"- 位置来源：{source}")
+    lines.append("如果用户没有明确说明出发地，可将该位置作为默认出发地；如果用户明确给出出发地，则必须以用户输入为准。")
+    return "\n".join(lines)
 
 
 def looks_like_garbled_text(text: str) -> bool:
@@ -84,6 +133,127 @@ def status():
     )
 
 
+@app.get("/api/amap/ip-location")
+def amap_ip_location():
+    try:
+        ip = str(request.args.get("ip", "")).strip()
+        if ip in ("127.0.0.1", "::1", "localhost"):
+            ip = ""
+        data = amap_request("/ip", {"ip": ip, "output": "JSON"})
+        if data.get("status") != "1":
+            return jsonify({"error": data.get("info", "IP定位失败"), "raw": data}), 400
+        return jsonify(
+            {
+                "source": "amap_ip",
+                "province": data.get("province") if isinstance(data.get("province"), str) else "",
+                "city": data.get("city") if isinstance(data.get("city"), str) else "",
+                "adcode": data.get("adcode") if isinstance(data.get("adcode"), str) else "",
+                "rectangle": data.get("rectangle") if isinstance(data.get("rectangle"), str) else "",
+                "raw": data,
+            }
+        )
+    except Exception as exc:
+        return jsonify({"error": str(exc)}), 500
+
+
+@app.get("/api/amap/reverse-geocode")
+def amap_reverse_geocode():
+    location = str(request.args.get("location", "")).strip()
+    if not location:
+        return jsonify({"error": "缺少 location 参数，格式为 lng,lat"}), 400
+    try:
+        data = amap_request(
+            "/geocode/regeo",
+            {
+                "location": location,
+                "extensions": "all",
+                "radius": request.args.get("radius", "1000"),
+                "output": "JSON",
+            },
+        )
+        if data.get("status") != "1":
+            return jsonify({"error": data.get("info", "逆地理编码失败"), "raw": data}), 400
+        regeocode = data.get("regeocode") or {}
+        component = regeocode.get("addressComponent") or {}
+        city = component.get("city")
+        if isinstance(city, list):
+            city = ""
+        return jsonify(
+            {
+                "source": "browser_geolocation",
+                "location": location,
+                "address": regeocode.get("formatted_address", ""),
+                "province": component.get("province", ""),
+                "city": city or component.get("province", ""),
+                "district": component.get("district", ""),
+                "township": component.get("township", ""),
+                "adcode": component.get("adcode", ""),
+                "pois": (regeocode.get("pois") or [])[:5],
+                "raw": data,
+            }
+        )
+    except Exception as exc:
+        return jsonify({"error": str(exc)}), 500
+
+
+@app.get("/api/amap/input-tips")
+def amap_input_tips():
+    keywords = str(request.args.get("keywords", "")).strip()
+    city = str(request.args.get("city", "")).strip()
+    if len(keywords) < 2:
+        return jsonify({"tips": []})
+    try:
+        data = amap_request(
+            "/assistant/inputtips",
+            {"keywords": keywords, "city": city, "citylimit": "false", "datatype": "all", "output": "JSON"},
+        )
+        tips = data.get("tips") or []
+        clean_tips = []
+        for tip in tips[:8]:
+            if not isinstance(tip, dict):
+                continue
+            clean_tips.append(
+                {
+                    "name": tip.get("name", ""),
+                    "district": tip.get("district", ""),
+                    "address": tip.get("address", ""),
+                    "location": tip.get("location", ""),
+                    "adcode": tip.get("adcode", ""),
+                }
+            )
+        return jsonify({"tips": clean_tips})
+    except Exception as exc:
+        return jsonify({"error": str(exc), "tips": []}), 200
+
+
+@app.get("/api/amap/static-map")
+def amap_static_map():
+    try:
+        params = {
+            "location": request.args.get("location", ""),
+            "zoom": request.args.get("zoom", "12"),
+            "size": request.args.get("size", "640*360"),
+            "scale": request.args.get("scale", "2"),
+            "markers": request.args.get("markers", ""),
+            "labels": request.args.get("labels", ""),
+            "paths": request.args.get("paths", ""),
+            "traffic": request.args.get("traffic", "0"),
+        }
+        key = amap_key()
+        if not key:
+            return jsonify({"error": "未配置 AMAP_API_KEY"}), 500
+        clean_params = {k: v for k, v in params.items() if v not in ("", None)}
+        clean_params["key"] = key
+        response = requests.get(f"{AMAP_BASE_URL}/staticmap", params=clean_params, timeout=10)
+        response.raise_for_status()
+        content_type = response.headers.get("content-type", "image/png")
+        if "image" not in content_type.lower() or response.content[:1] in (b"{", b"["):
+            return Response(status=204)
+        return Response(response.content, mimetype=content_type)
+    except Exception as exc:
+        return Response(status=204)
+
+
 @app.get("/api/conversations")
 def conversations():
     return jsonify({"conversations": list_conversations()})
@@ -114,6 +284,7 @@ def chat():
     offline_demo = bool(payload.get("offline_demo", False))
     thinking_mode = bool(payload.get("thinking_mode", False))
     conversation_id = str(payload.get("conversation_id", "")).strip() or None
+    client_context_prompt = build_client_context_prompt(public_client_context(payload))
 
     # Extract and sanitize fallback conversation history. When conversation_id is
     # available, the server-side SQLite history is the source of truth.
@@ -169,6 +340,7 @@ def chat():
                 message, config,
                 thinking_mode=thinking_mode,
                 message_history=history_for_agent,
+                client_context=client_context_prompt,
             )
         elapsed = round(time.time() - started_at, 2)
         meta = {"elapsed_seconds": elapsed, "model": model, "mode": mode, "trace": trace}
@@ -200,6 +372,7 @@ def chat_stream():
     offline_demo = bool(payload.get("offline_demo", False))
     thinking_mode = bool(payload.get("thinking_mode", False))
     conversation_id = str(payload.get("conversation_id", "")).strip() or None
+    client_context_prompt = build_client_context_prompt(public_client_context(payload))
 
     if not message:
         return jsonify({"error": "请输入行程需求。"}), 400
@@ -248,6 +421,7 @@ def chat_stream():
                     config,
                     thinking_mode=thinking_mode,
                     message_history=history_for_agent,
+                    client_context=client_context_prompt,
                 ):
                     if event.get("event") == "trace":
                         trace = event.get("trace", trace)

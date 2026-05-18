@@ -12,11 +12,48 @@ const amapStatus = document.querySelector("#amapStatus");
 const qweatherStatus = document.querySelector("#qweatherStatus");
 const trainStatus = document.querySelector("#trainStatus");
 const aviationStatus = document.querySelector("#aviationStatus");
+const locationStatus = document.querySelector("#locationStatus");
 const conversationListEl = document.querySelector("#conversationList");
 const newChatBtn = document.querySelector("#newChatBtn");
+const locateBtn = document.querySelector("#locateBtn");
+const inputSuggestToggle = document.querySelector("#inputSuggestToggle");
+const inputTipsEl = document.querySelector("#inputTips");
 const CURRENT_CONVERSATION_KEY = "travel_agent_current_conversation_id";
+const LOCATION_CONTEXT_KEY = "travel_agent_location_context";
+const INPUT_SUGGEST_KEY = "travel_agent_input_suggest_enabled";
 let currentConversationId = localStorage.getItem(CURRENT_CONVERSATION_KEY) || "";
+let currentLocationContext = loadLocationContext();
 let activeController = null;
+let inputTipTimer = null;
+let traceInteractionUntil = 0;
+
+if (inputSuggestToggle) {
+  inputSuggestToggle.checked = localStorage.getItem(INPUT_SUGGEST_KEY) !== "false";
+}
+
+function loadLocationContext() {
+  try {
+    return JSON.parse(localStorage.getItem(LOCATION_CONTEXT_KEY) || "{}");
+  } catch {
+    return {};
+  }
+}
+
+function saveLocationContext(context) {
+  currentLocationContext = context || {};
+  localStorage.setItem(LOCATION_CONTEXT_KEY, JSON.stringify(currentLocationContext));
+  updateLocationStatus();
+}
+
+function locationLabel(context = currentLocationContext) {
+  return context.city || context.district || context.province || "";
+}
+
+function updateLocationStatus(text = "") {
+  if (!locationStatus) return;
+  const label = text || locationLabel();
+  locationStatus.textContent = label || "未定位";
+}
 
 function getConversationHistory() {
   return [...messagesEl.querySelectorAll(".message:not(.loading)")].slice(0, -1).slice(-8).map((message) => {
@@ -30,6 +67,129 @@ function escapeHtml(text) {
   const div = document.createElement("div");
   div.textContent = text;
   return div.innerHTML;
+}
+
+const POI_MARKER_LABELS = "123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ".split("");
+
+function markerLabel(index) {
+  return POI_MARKER_LABELS[index] || String(index + 1);
+}
+
+function parseLngLat(location) {
+  const [lng, lat] = String(location || "").split(",").map(Number);
+  if (!Number.isFinite(lng) || !Number.isFinite(lat)) return null;
+  return { lng, lat };
+}
+
+function mapViewport(locations) {
+  const points = locations.map(parseLngLat).filter(Boolean);
+  if (!points.length) return { center: locations[0] || "", zoom: "12" };
+  const lngs = points.map((point) => point.lng);
+  const lats = points.map((point) => point.lat);
+  const minLng = Math.min(...lngs);
+  const maxLng = Math.max(...lngs);
+  const minLat = Math.min(...lats);
+  const maxLat = Math.max(...lats);
+  const lngSpan = maxLng - minLng;
+  const latSpan = maxLat - minLat;
+  const span = Math.max(lngSpan, latSpan * 1.8);
+  const center = `${((minLng + maxLng) / 2).toFixed(6)},${((minLat + maxLat) / 2).toFixed(6)}`;
+  let zoom = 12;
+  if (span > 2.2) zoom = 7;
+  else if (span > 1.1) zoom = 8;
+  else if (span > 0.55) zoom = 9;
+  else if (span > 0.28) zoom = 10;
+  else if (span > 0.14) zoom = 11;
+  else if (span <= 0.035) zoom = 13;
+  return { center, zoom: String(zoom) };
+}
+
+function buildMapImageUrl(locations, options = {}) {
+  const cleanLocations = (locations || [])
+    .map((location) => String(location || "").trim())
+    .filter((location) => /^-?\d+(?:\.\d+)?,-?\d+(?:\.\d+)?$/.test(location))
+    .slice(0, POI_MARKER_LABELS.length);
+  if (!cleanLocations.length) return "";
+  const viewport = mapViewport(cleanLocations);
+  const params = new URLSearchParams({
+    location: options.center || viewport.center,
+    zoom: options.zoom || viewport.zoom,
+    size: options.size || "1024*520",
+    markers: cleanLocations
+      .map((loc, index) => `mid,0x1677ff,${markerLabel(index)}:${loc}`)
+      .join("|"),
+  });
+  return `/api/amap/static-map?${params.toString()}`;
+}
+
+function markTraceInteraction() {
+  traceInteractionUntil = Date.now() + 700;
+}
+
+function clamp(value, min, max) {
+  return Math.min(max, Math.max(min, value));
+}
+
+function updateDraggableMap(viewport) {
+  const image = viewport.querySelector(".poi-map-preview");
+  if (!image) return;
+  const x = Number(viewport.dataset.offsetX || 0);
+  const y = Number(viewport.dataset.offsetY || 0);
+  image.style.transform = `translate(calc(-50% + ${x}px), calc(-50% + ${y}px))`;
+}
+
+function clampMapOffset(viewport) {
+  const image = viewport.querySelector(".poi-map-preview");
+  if (!image || !image.complete) return;
+  const maxX = Math.max(0, (image.clientWidth - viewport.clientWidth) / 2);
+  const maxY = Math.max(0, (image.clientHeight - viewport.clientHeight) / 2);
+  viewport.dataset.offsetX = String(clamp(Number(viewport.dataset.offsetX || 0), -maxX, maxX));
+  viewport.dataset.offsetY = String(clamp(Number(viewport.dataset.offsetY || 0), -maxY, maxY));
+  updateDraggableMap(viewport);
+}
+
+function initDraggableMaps(root = document) {
+  root.querySelectorAll("[data-draggable-map]").forEach((viewport) => {
+    if (viewport.dataset.dragReady === "true") return;
+    viewport.dataset.dragReady = "true";
+    viewport.dataset.offsetX = viewport.dataset.offsetX || "0";
+    viewport.dataset.offsetY = viewport.dataset.offsetY || "0";
+    const image = viewport.querySelector(".poi-map-preview");
+    if (image) {
+      image.addEventListener("load", () => clampMapOffset(viewport), { once: true });
+    }
+
+    let dragging = false;
+    let startX = 0;
+    let startY = 0;
+    let baseX = 0;
+    let baseY = 0;
+    viewport.addEventListener("pointerdown", (event) => {
+      dragging = true;
+      startX = event.clientX;
+      startY = event.clientY;
+      baseX = Number(viewport.dataset.offsetX || 0);
+      baseY = Number(viewport.dataset.offsetY || 0);
+      viewport.setPointerCapture(event.pointerId);
+      event.preventDefault();
+    });
+    viewport.addEventListener("pointermove", (event) => {
+      if (!dragging) return;
+      viewport.dataset.offsetX = String(baseX + event.clientX - startX);
+      viewport.dataset.offsetY = String(baseY + event.clientY - startY);
+      clampMapOffset(viewport);
+    });
+    const stopDrag = (event) => {
+      if (!dragging) return;
+      dragging = false;
+      if (viewport.hasPointerCapture(event.pointerId)) {
+        viewport.releasePointerCapture(event.pointerId);
+      }
+      clampMapOffset(viewport);
+    };
+    viewport.addEventListener("pointerup", stopDrag);
+    viewport.addEventListener("pointercancel", stopDrag);
+  });
 }
 
 function renderMarkdown(text) {
@@ -245,6 +405,31 @@ function renderTrace(trace, expanded = false) {
 function renderLoadingStatus(article, text, trace = [], stats = {}) {
   const bubble = article.querySelector(".bubble");
   if (!bubble) return;
+  const existingTrace = bubble.querySelector(".trace-panel");
+  const existingTraceList = bubble.querySelector(".trace-list");
+  const isTraceInteracting = Date.now() < traceInteractionUntil;
+  const traceWasOpen = existingTrace ? existingTrace.open : true;
+  const traceWasAtBottom = existingTraceList
+    ? existingTraceList.scrollHeight - existingTraceList.scrollTop - existingTraceList.clientHeight < 12
+    : true;
+  const traceScrollTop = existingTraceList ? existingTraceList.scrollTop : 0;
+  const messagesWereAtBottom = messagesEl.scrollHeight - messagesEl.scrollTop - messagesEl.clientHeight < 32;
+
+  if (isTraceInteracting && existingTrace) {
+    const status = bubble.querySelector(".loading-status");
+    if (status) status.textContent = text;
+    const streamStats = bubble.querySelector(".stream-stats");
+    if (streamStats) {
+      const parts = [];
+      if (stats.eventCount > 0) parts.push(`已收到 ${stats.eventCount} 个阶段事件`);
+      if (typeof stats.silentSeconds === "number") parts.push(`距离上次更新 ${stats.silentSeconds}s`);
+      if (stats.model) parts.push(stats.model);
+      streamStats.textContent = parts.length ? parts.join(" · ") : "正在建立流式连接";
+    }
+    bubble.dataset.rawText = text;
+    return;
+  }
+
   bubble.innerHTML = "";
   const status = document.createElement("div");
   status.className = "loading-status";
@@ -261,10 +446,21 @@ function renderLoadingStatus(article, text, trace = [], stats = {}) {
   bubble.appendChild(streamStats);
 
   if (trace.length) {
-    bubble.appendChild(renderTrace(trace, true));
+    const traceEl = renderTrace(trace, traceWasOpen);
+    bubble.appendChild(traceEl);
+    const traceList = traceEl.querySelector(".trace-list");
+    if (traceList && traceEl.open) {
+      if (traceWasAtBottom) {
+        traceList.scrollTop = traceList.scrollHeight;
+      } else {
+        traceList.scrollTop = traceScrollTop;
+      }
+    }
   }
   bubble.dataset.rawText = text;
-  messagesEl.scrollTop = messagesEl.scrollHeight;
+  if (messagesWereAtBottom) {
+    messagesEl.scrollTop = messagesEl.scrollHeight;
+  }
 }
 
 function parseSseBuffer(buffer) {
@@ -432,6 +628,7 @@ const TRACE_TOOL_INFO = {
   get_walking_route: { label: "步行", title: "规划步行路线", desc: "判断短距离步行可达性。" },
   get_bicycling_route: { label: "骑行", title: "规划骑行路线", desc: "判断共享单车或骑行路线是否合适。" },
   get_route_distance_matrix: { label: "距离", title: "比较距离耗时", desc: "比较多个地点到同一目的地的距离和耗时。" },
+  get_traffic_status: { label: "路况", title: "查询实时路况", desc: "检查指定地点周边道路拥堵情况和通行风险。" },
   search_travel_pois: { label: "POI", title: "搜索目的地地点", desc: "查询景点、餐饮、商圈、酒店等 POI。" },
   search_nearby_pois: { label: "周边", title: "搜索周边地点", desc: "围绕指定地点按半径查询餐饮、住宿或地铁站。" },
   get_place_location: { label: "定位", title: "解析地点位置", desc: "核验地点地址和经纬度。" },
@@ -657,6 +854,166 @@ async function loadStatus() {
   }
 }
 
+async function detectIpLocation() {
+  if (locationLabel()) {
+    updateLocationStatus();
+    return;
+  }
+  updateLocationStatus("定位中...");
+  try {
+    const response = await fetch("/api/amap/ip-location");
+    const data = await response.json();
+    if (response.ok && (data.city || data.province)) {
+      saveLocationContext({
+        source: "高德IP定位",
+        province: data.province || "",
+        city: data.city || data.province || "",
+        district: "",
+        adcode: data.adcode || "",
+        address: data.city || data.province || "",
+        location: "",
+      });
+    } else {
+      updateLocationStatus("未定位");
+    }
+  } catch {
+    updateLocationStatus("未定位");
+  }
+}
+
+function requestBrowserLocation() {
+  if (!navigator.geolocation) {
+    updateLocationStatus("浏览器不支持定位");
+    return;
+  }
+  updateLocationStatus("等待授权...");
+  navigator.geolocation.getCurrentPosition(
+    async (position) => {
+      const { longitude, latitude } = position.coords;
+      const location = `${longitude.toFixed(6)},${latitude.toFixed(6)}`;
+      try {
+        const response = await fetch(`/api/amap/reverse-geocode?location=${encodeURIComponent(location)}`);
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.error || "逆地理编码失败");
+        saveLocationContext({
+          source: "浏览器定位+高德逆地理编码",
+          province: data.province || "",
+          city: data.city || data.province || "",
+          district: data.district || "",
+          adcode: data.adcode || "",
+          address: data.address || "",
+          location,
+        });
+      } catch {
+        saveLocationContext({ source: "浏览器定位", location });
+      }
+    },
+    () => updateLocationStatus(locationLabel() || "定位被拒绝"),
+    { enableHighAccuracy: true, timeout: 8000, maximumAge: 10 * 60 * 1000 },
+  );
+}
+
+function extractTipKeyword(text) {
+  const beforeCursor = text.slice(0, inputEl.selectionStart || text.length);
+  const token = beforeCursor.split(/[\s，。,.、；;！？!?：:\n]/).pop() || "";
+  return token.replace(/^(从|到|去|前往|查|查询|附近|明天|今天|后天)/, "").trim();
+}
+
+const tipSeparatorPattern = /[\s,.;:!?，。；：！？、（）()【】[\]{}<>《》"'“”‘’\n\r\t]/;
+const tipTriggerChars = "从到去往在";
+const tipTriggerWords = ["出发地", "目的地", "起点", "终点", "附近", "前往", "出发", "查询", "搜索", "查", "搜"];
+const tipIgnorePrefixPattern = /^(帮我|我想|我打算|想要|计划|明天|今天|后天|查|查询|搜索|看看|一下)$/;
+
+function getTipQuery(text) {
+  const cursor = inputEl.selectionStart ?? text.length;
+  const beforeCursor = text.slice(0, cursor);
+  let start = cursor;
+  while (start > 0 && !tipSeparatorPattern.test(text[start - 1])) {
+    start -= 1;
+  }
+
+  let triggerStart = -1;
+  for (const char of tipTriggerChars) {
+    const index = beforeCursor.lastIndexOf(char);
+    if (index > triggerStart) triggerStart = index;
+  }
+  for (const word of tipTriggerWords) {
+    const index = beforeCursor.lastIndexOf(word);
+    if (index >= 0 && index + word.length > triggerStart) {
+      triggerStart = index + word.length - 1;
+    }
+  }
+  if (triggerStart >= start) {
+    start = triggerStart + 1;
+  }
+
+  let raw = text.slice(start, cursor);
+  const leadingSpaces = raw.match(/^\s*/)?.[0].length || 0;
+  start += leadingSpaces;
+  raw = raw.trimStart();
+
+  let keyword = raw.trim();
+  if (keyword.startsWith("一下")) {
+    start += 2;
+    keyword = keyword.slice(2).trim();
+  }
+  if (!keyword || tipIgnorePrefixPattern.test(keyword)) {
+    return { keyword: "", start, end: cursor };
+  }
+
+  return { keyword, start, end: cursor };
+}
+
+function hideInputTips() {
+  if (!inputTipsEl) return;
+  inputTipsEl.hidden = true;
+  inputTipsEl.innerHTML = "";
+}
+
+async function loadInputTips() {
+  if (!inputTipsEl || activeController || (inputSuggestToggle && !inputSuggestToggle.checked)) {
+    hideInputTips();
+    return;
+  }
+  const keyword = getTipQuery(inputEl.value).keyword;
+  if (keyword.length < 2 || keyword.length > 16) {
+    hideInputTips();
+    return;
+  }
+  try {
+    const params = new URLSearchParams({ keywords: keyword });
+    const city = locationLabel();
+    if (city) params.set("city", city);
+    const response = await fetch(`/api/amap/input-tips?${params.toString()}`);
+    const data = await response.json();
+    const tips = Array.isArray(data.tips) ? data.tips.filter((tip) => tip.name) : [];
+    if (!tips.length) {
+      hideInputTips();
+      return;
+    }
+    inputTipsEl.innerHTML = tips.map((tip) => `
+      <button type="button" class="input-tip" data-name="${escapeHtml(tip.name)}">
+        <strong>${escapeHtml(tip.name)}</strong>
+        <span>${escapeHtml(tip.district || tip.address || "")}</span>
+      </button>
+    `).join("");
+    inputTipsEl.hidden = false;
+  } catch {
+    hideInputTips();
+  }
+}
+
+function applyInputTip(name) {
+  const { keyword, start, end } = getTipQuery(inputEl.value);
+  const prefix = inputEl.value.slice(0, start);
+  const suffix = inputEl.value.slice(end);
+  inputEl.value = keyword ? `${prefix}${name}${suffix}` : `${inputEl.value}${name}`;
+  const nextCursor = (keyword ? prefix.length : inputEl.value.length - name.length) + name.length;
+  hideInputTips();
+  inputEl.focus();
+  inputEl.setSelectionRange(nextCursor, nextCursor);
+}
+
 formEl.addEventListener("submit", async (event) => {
   event.preventDefault();
   const message = inputEl.value.trim();
@@ -693,6 +1050,7 @@ formEl.addEventListener("submit", async (event) => {
         history: getConversationHistory(),
         offline_demo: offlineToggle.checked,
         thinking_mode: thinkingToggle.checked,
+        client_context: currentLocationContext,
       },
       (data) => {
         eventCount += 1;
@@ -758,6 +1116,52 @@ formEl.addEventListener("submit", async (event) => {
   }
 });
 
+if (locateBtn) {
+  locateBtn.addEventListener("click", requestBrowserLocation);
+}
+
+if (inputSuggestToggle) {
+  inputSuggestToggle.addEventListener("change", () => {
+    localStorage.setItem(INPUT_SUGGEST_KEY, inputSuggestToggle.checked ? "true" : "false");
+    if (!inputSuggestToggle.checked) {
+      hideInputTips();
+      return;
+    }
+    clearTimeout(inputTipTimer);
+    inputTipTimer = setTimeout(loadInputTips, 120);
+  });
+}
+
+inputEl.addEventListener("input", () => {
+  clearTimeout(inputTipTimer);
+  inputTipTimer = setTimeout(loadInputTips, 260);
+});
+
+inputEl.addEventListener("blur", () => {
+  setTimeout(hideInputTips, 160);
+});
+
+if (inputTipsEl) {
+  inputTipsEl.addEventListener("mousedown", (event) => {
+    const button = event.target.closest(".input-tip");
+    if (!button) return;
+    event.preventDefault();
+    applyInputTip(button.dataset.name || "");
+  });
+}
+
+messagesEl.addEventListener("pointerdown", (event) => {
+  if (event.target.closest(".trace-panel")) markTraceInteraction();
+});
+
+messagesEl.addEventListener("wheel", (event) => {
+  if (event.target.closest(".trace-panel")) markTraceInteraction();
+}, { passive: true });
+
+messagesEl.addEventListener("scroll", () => {
+  if (messagesEl.querySelector(".message.loading .trace-panel:hover")) markTraceInteraction();
+}, { passive: true });
+
 clearBtn.addEventListener("click", () => {
   if (currentConversationId) {
     deleteConversation(currentConversationId);
@@ -783,7 +1187,9 @@ inputEl.addEventListener("keydown", (event) => {
 });
 
 renderWelcome();
+updateLocationStatus();
 loadStatus();
+detectIpLocation();
 loadConversations().then(() => {
   if (currentConversationId) {
     loadConversation(currentConversationId).catch(() => {
@@ -805,6 +1211,7 @@ function renderStructuredCardsInto(article, data) {
   container.className = "structured-container";
   container.innerHTML = html;
   bubble.appendChild(container);
+  initDraggableMaps(container);
 }
 
 function buildStructuredCards(data) {
@@ -909,13 +1316,14 @@ function renderItineraryTimeline(itinerary) {
 function transportCategory(option) {
   const raw = `${option.category || ""} ${option.mode || ""} ${option.notes || ""}`.toLowerCase();
   const text = `${option.category || ""} ${option.mode || ""} ${option.notes || ""}`;
+  if (raw.includes("driving") || text.includes("驾车") || text.includes("自驾")) return "driving";
   if (raw.includes("interline") || text.includes("中转") || (Array.isArray(option.legs) && option.legs.length > 1)) return "interline";
   if (raw.includes("flight") || text.includes("航班") || /^[A-Z]{2}\s?\d+/.test(option.mode || "")) return "flight";
   if (raw.includes("train") || text.includes("高铁") || text.includes("动车") || /^[GDCZTK]\d+/.test(option.mode || "")) return "train";
   if (raw.includes("transit") || text.includes("地铁") || text.includes("公交")) return "transit";
   if (raw.includes("walking") || text.includes("步行")) return "walking";
   if (raw.includes("bicycling") || text.includes("骑行")) return "bicycling";
-  if (raw.includes("driving") || text.includes("驾车") || text.includes("自驾")) return "driving";
+  if (raw.includes("traffic") || text.includes("路况") || text.includes("拥堵")) return "traffic";
   return "generic";
 }
 
@@ -927,6 +1335,7 @@ function transportIcon(category) {
     transit: "乘",
     walking: "步",
     bicycling: "骑",
+    traffic: "堵",
     driving: "驾",
     generic: "行",
   }[category] || "行";
@@ -940,17 +1349,38 @@ function transportLabel(category) {
     transit: "公交地铁",
     walking: "步行",
     bicycling: "骑行",
+    traffic: "实时路况",
     driving: "驾车",
     generic: "交通",
   }[category] || "交通";
 }
 
+function isUsefulTransportValue(value) {
+  const text = String(value || "").trim();
+  if (!text) return false;
+  if (["--", "-", "未知", "可用", "available", "null", "undefined"].includes(text.toLowerCase())) return false;
+  return true;
+}
+
+function cleanTransportNote(note) {
+  const text = String(note || "").trim();
+  if (!text) return "";
+  if (/Aviationstack/i.test(text) && /不提供票价|票价/.test(text)) {
+    return "航班票价需以航司或购票平台为准";
+  }
+  if (/不支持按指定日期查询/.test(text)) {
+    return "当前航班数据仅作近期班次参考";
+  }
+  return text;
+}
+
 function transportMetaChips(option) {
   const chips = [];
-  if (option.data_source) chips.push(option.data_source);
-  if (option.status) chips.push(option.status);
-  if (option.departure_time || option.arrival_time) {
-    chips.push(`${option.departure_time || "--"} → ${option.arrival_time || "--"}`);
+  if (isUsefulTransportValue(option.status) && !["success", "ok"].includes(String(option.status).toLowerCase())) {
+    chips.push(option.status);
+  }
+  if (isUsefulTransportValue(option.departure_time) || isUsefulTransportValue(option.arrival_time)) {
+    chips.push(`${isUsefulTransportValue(option.departure_time) ? option.departure_time : "--"} → ${isUsefulTransportValue(option.arrival_time) ? option.arrival_time : "--"}`);
   }
   return chips.map(chip => `<span>${escapeHtml(String(chip))}</span>`).join("");
 }
@@ -981,6 +1411,7 @@ function renderTransportLegs(legs) {
 function renderTransportCards(transportList) {
   const cards = transportList.map(t => {
     const category = transportCategory(t);
+    const note = cleanTransportNote(t.notes);
     return `
     <div class="transport-card transport-${category}">
       <div class="transport-card-head">
@@ -993,11 +1424,11 @@ function renderTransportCards(transportList) {
       <div class="transport-route">${escapeHtml(t.from || "")} → ${escapeHtml(t.to || "")}</div>
       ${transportMetaChips(t) ? `<div class="transport-meta-chips">${transportMetaChips(t)}</div>` : ""}
       <div class="transport-details">
-        <div class="transport-detail"><span>时长</span><span>${escapeHtml(t.duration || "--")}</span></div>
-        <div class="transport-detail"><span>费用/票价</span><span>${escapeHtml(t.cost_estimate || "--")}</span></div>
+        <div class="transport-detail"><span>时长</span><span>${escapeHtml(isUsefulTransportValue(t.duration) ? t.duration : "--")}</span></div>
+        <div class="transport-detail"><span>费用/票价</span><span>${escapeHtml(isUsefulTransportValue(t.cost_estimate) ? t.cost_estimate : "--")}</span></div>
       </div>
       ${renderTransportLegs(t.legs)}
-      ${t.notes ? `<div class="transport-notes">${escapeHtml(t.notes)}</div>` : ""}
+      ${note ? `<div class="transport-notes">${escapeHtml(note)}</div>` : ""}
     </div>
   `}).join("");
   return `<div class="card-section"><h3 class="card-section-title">交通方案</h3><div class="transport-grid">${cards}</div></div>`;
@@ -1039,8 +1470,19 @@ function renderTipsList(tips) {
 function renderPoiCards(categories) {
   if (!categories || !categories.length) return "";
   const sections = categories.map(cat => {
-    const items = (cat.items || []).map(item => `
+    const mapItems = (cat.items || []).filter((item) => item.location).slice(0, POI_MARKER_LABELS.length);
+    const locations = mapItems.map((item) => item.location);
+    const mapUrl = buildMapImageUrl(locations);
+    const mapLegend = mapItems.length ? `
+      <div class="poi-map-legend">
+        ${mapItems.map((item, index) => `
+          <span><b>${markerLabel(index)}</b>${escapeHtml(item.name || `地点${index + 1}`)}</span>
+        `).join("")}
+      </div>
+    ` : "";
+    const items = (cat.items || []).map((item, index) => `
       <div class="poi-card">
+        ${index < POI_MARKER_LABELS.length && item.location ? `<span class="poi-card-index">${markerLabel(index)}</span>` : ""}
         <span class="poi-card-type">${escapeHtml(item.type || "")}</span>
         <h4 class="poi-card-name">${escapeHtml(item.name || "")}</h4>
         ${item.address ? `<p class="poi-card-address">${escapeHtml(item.address)}</p>` : ""}
@@ -1050,6 +1492,12 @@ function renderPoiCards(categories) {
     return `
       <div class="poi-category">
         <h4 class="poi-category-title">${escapeHtml(cat.category || "POI推荐")}</h4>
+        ${mapUrl ? `
+          <div class="poi-map-viewport" data-draggable-map>
+            <img class="poi-map-preview" src="${escapeHtml(mapUrl)}" alt="${escapeHtml(cat.category || "地点")}地图预览" loading="lazy" referrerpolicy="no-referrer" draggable="false" onerror="this.closest('.poi-map-viewport').hidden=true">
+          </div>
+        ` : ""}
+        ${mapLegend}
         <div class="poi-card-grid">${items}</div>
       </div>
     `;

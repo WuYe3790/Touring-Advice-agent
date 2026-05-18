@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>LangChain 旅游规划智能体</title>
-  <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}">
+  <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}?v=20260518-dragmap">
 </head>
 <body>
   <div class="bg-grid"></div>
@@ -48,6 +48,10 @@
           <span>Aviationstack</span>
           <strong id="aviationStatus">读取中...</strong>
         </div>
+        <div class="status-row">
+          <span>默认出发地</span>
+          <strong id="locationStatus">定位中...</strong>
+        </div>
       </section>
 
       <section class="history-panel">
@@ -86,9 +90,15 @@
             <input id="offlineToggle" type="checkbox">
             <span>离线演示</span>
           </label>
+          <label class="compact-toggle">
+            <input id="inputSuggestToggle" type="checkbox" checked>
+            <span>联想</span>
+          </label>
+          <button id="locateBtn" class="toolbar-button" type="button">定位</button>
         </div>
         <div class="input-wrap">
           <textarea id="messageInput" rows="2" placeholder="请输入你的出行需求，例如：明天从宁波去舟山玩1天..."></textarea>
+          <div id="inputTips" class="input-tips" hidden></div>
         </div>
         <button id="sendBtn" type="submit">
           <span>发送</span>
@@ -98,6 +108,6 @@
   </main>
 
   <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
-  <script src="{{ url_for('static', filename='app.js') }}"></script>
+  <script src="{{ url_for('static', filename='app.js') }}?v=20260518-dragmap"></script>
 </body>
 </html>

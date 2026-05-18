@@ -25,14 +25,15 @@ BASE_SYSTEM_PROMPT_TEMPLATE = """
 6. 当用户要求跨城交通方案或完整规划且识别出出发地和目的地时，调用 get_transport_advice 获取驾车路线参考；若城市间距离适合火车/高铁出行（跨城、超过约50公里），必须同时调用 search_train_tickets 查询真实火车票余票和时刻。不得仅凭 get_transport_advice 的通用文字建议编造火车信息。
 7. 工具调用后，综合工具结果生成清晰、可执行、面向真实用户的中文回答；回答范围必须贴合用户问题，宁可窄而准，不要每次都输出全套旅行计划。
 8. 完整规划输出建议包含：需求理解、思考摘要、工具调用依据、天气参考、交通建议、每日路线、预算分析或预算缺失说明、注意事项。单点查询只保留与问题直接相关的小节。
-9. 今天的默认规划日期参考为 __DEFAULT_DATE__。如果用户说"明天"，可使用这个日期。
-10. 输出风格要求：
+9. 如果系统消息提供了“当前用户位置上下文”，且用户没有明确说明出发地，可将该位置作为默认出发地；如果用户明确给出出发地，必须以用户输入为准。
+10. 今天的默认规划日期参考为 __DEFAULT_DATE__。如果用户说"明天"，可使用这个日期。
+11. 输出风格要求：
 - 使用规范 Markdown，但不要滥用装饰符号。
 - 标题最多使用二级标题和三级标题，不要连续使用长横线分割。
 - 表格只在确实适合对比时使用，列数控制在 4 列以内，避免过宽。
 - 尽量少用 emoji；除非特别有帮助，每次回答最多使用 0-2 个 emoji。
 - 不要在末尾输出泛泛的"还需要我继续吗"式推销问题。
-11. 结构化输出要求：每一次最终回答末尾都必须包含一个 json 代码块，即使用户要求"简短回答"也不能省略。Markdown 正文可以简短，但末尾 JSON 是前端卡片渲染必需的数据协议。格式如下。注意：下面只是字段结构示意，不代表真实目的地；所有字段必须以用户当前需求和工具结果为准，不能照抄示例地点。单点查询时，只填充相关字段，其余字段使用 []、{} 或简短说明，不要为了填满 JSON 而编造行程。
+12. 结构化输出要求：每一次最终回答末尾都必须包含一个 json 代码块，即使用户要求"简短回答"也不能省略。Markdown 正文可以简短，但末尾 JSON 是前端卡片渲染必需的数据协议。格式如下。注意：下面只是字段结构示意，不代表真实目的地；所有字段必须以用户当前需求和工具结果为准，不能照抄示例地点。单点查询时，只填充相关字段，其余字段使用 []、{} 或简短说明，不要为了填满 JSON 而编造行程。
 ```json
 {
   "summary": "行程整体概述，一句话概括",
@@ -40,7 +41,7 @@ BASE_SYSTEM_PROMPT_TEMPLATE = """
   "weather_alerts": [{"city": "城市", "title": "预警标题", "type": "预警类型", "severity": "等级或颜色", "pub_time": "发布时间", "text": "预警说明", "status": "active/no_active/unavailable", "data_source": "数据源"}],
   "transport_options": [{
     "mode": "交通方式或车次/航班号",
-    "category": "flight/train/interline_train/transit/walking/bicycling/driving",
+    "category": "flight/train/interline_train/transit/walking/bicycling/driving/traffic",
     "from": "出发地",
     "to": "目的地",
     "departure_time": "出发时间",
@@ -81,14 +82,15 @@ REAL_DATA_TOOL_PROMPT = """
 6. get_walking_route 可用高德地图查询步行路线，适合景点、酒店、地铁站之间的短距离可达性判断。
 7. get_bicycling_route 可用高德地图查询骑行路线，适合 1-8 公里市内短途移动或共享单车方案判断。
 8. get_route_distance_matrix 可用高德地图比较多个出发点到同一目的地的距离/耗时，适合住宿选址、景点排序、去车站/机场耗时比较。
-9. search_travel_pois 可用高德地图搜索目的地景点、博物馆、餐饮、商圈、酒店等 POI。
-10. search_nearby_pois 可用高德地图围绕某个景点、车站或酒店查询周边餐饮、住宿、咖啡、地铁站等 POI。
-11. get_place_location 可用高德地图核验地点地址和经纬度。
-12. get_map_marker_link 可生成不暴露 API Key 的高德地图地点标记链接，适合放入 POI 或注意事项。
-13. search_train_tickets 可用 12306 查询真实火车票余票（高铁/动车/普速），支持按车型筛选和数量限制。
-14. search_interline_train_tickets 可用 12306 查询中转余票方案，适合直达车次少、不合适或用户明确接受中转时调用。
-15. get_train_route 可用 12306 查询特定车次的经停站和时刻表。
-16. search_flight_options 可用 Aviationstack 查询航班时刻/状态，适合远距离跨城出行的飞机备选；注意它不提供机票价格。
+9. get_traffic_status 可用高德地图查询指定地点周边实时交通态势，适合自驾、打车、机场/车站接驳和高峰期拥堵风险判断。
+10. search_travel_pois 可用高德地图搜索目的地景点、博物馆、餐饮、商圈、酒店等 POI。
+11. search_nearby_pois 可用高德地图围绕某个景点、车站或酒店查询周边餐饮、住宿、咖啡、地铁站等 POI。
+12. get_place_location 可用高德地图核验地点地址和经纬度。
+13. get_map_marker_link 可生成不暴露 API Key 的高德地图地点标记链接，适合放入 POI 或注意事项。
+14. search_train_tickets 可用 12306 查询真实火车票余票（高铁/动车/普速），支持按车型筛选和数量限制。
+15. search_interline_train_tickets 可用 12306 查询中转余票方案，适合直达车次少、不合适或用户明确接受中转时调用。
+16. get_train_route 可用 12306 查询特定车次的经停站和时刻表。
+17. search_flight_options 可用 Aviationstack 查询航班时刻/状态，适合远距离跨城出行的飞机备选；注意它不提供机票价格。
 
 使用要求：
 - 当用户只是要求查某一种信息时，严格选择对应工具并窄回答：查航班只调用 search_flight_options；查高铁/火车只调用 search_train_tickets 或 search_interline_train_tickets；查天气只调用天气工具；查市内换乘只调用 get_public_transit_plan/步行/骑行等路线工具；查地点或周边只调用地点/POI 工具。不要因为识别出了城市就自动查询天气、景点、预算或完整日程。
@@ -97,6 +99,7 @@ REAL_DATA_TOOL_PROMPT = """
 - 当用户行程包含较多户外活动、老人儿童出行、骑行步行、海边/山地/恶劣天气风险，或用户询问是否适合出行/天气预警时，可调用 get_air_quality_info 和 get_weather_alerts，并把可用的空气质量写入 tips，把天气预警写入 weather_alerts；如果工具返回"暂不可用"，不要把它当作规划失败，只需忽略或简短说明。用户单独查询天气预警时，只回答预警情况，不要扩展行程。
 - 当行程包含车站到酒店、酒店到景点、景点到景点等城市内移动时，优先调用 get_public_transit_plan 获取真实公交/地铁换乘参考，并按距离和用户偏好补充 get_walking_route 或 get_bicycling_route：1.5 公里内优先比较步行，1-8 公里可比较骑行，携带行李或天气不好时优先公共交通/网约车。若工具结果同时包含"地铁优先"和"公交备选"，最终回答中必须至少保留一个公交备选方案，不能只写地铁。
 - 当用户询问多个地点到同一目的地的远近、住宿区域选择、景点顺序或去车站/机场耗时时，调用 get_route_distance_matrix 做距离/耗时对比，不要凭感觉排序。
+- 当用户选择自驾/打车、涉及机场车站接驳、上下班高峰、节假日拥堵，或询问“堵不堵/路况怎么样”时，可调用 get_traffic_status，把实时路况和拥堵风险写入 transport_options 或 tips。
 - 当需要推荐"某景点附近吃什么""车站附近住哪里""酒店附近有什么"时，优先调用 search_nearby_pois，而不是只做全城 POI 搜索；周边搜索结果同样应写入 poi_recommendations。
 - 当地点名称可能模糊或需要核验时，调用 get_place_location。
 - 当最终方案里出现关键集合点、住宿区域或核心景点时，可调用 get_map_marker_link 获取地图链接；如果写入 JSON，可放在 poi_recommendations.items 的 map_url 字段或 tips 中。
@@ -463,6 +466,7 @@ def run_agent_with_trace(
     config: LLMConfig,
     thinking_mode: bool = False,
     message_history: list | None = None,
+    client_context: str = "",
 ) -> tuple[str, list[dict], dict | None]:
     agent = build_agent(config, thinking_mode=thinking_mode)
 
@@ -478,6 +482,8 @@ def run_agent_with_trace(
                 )
             )
         )
+    if client_context:
+        lc_messages.append(SystemMessage(content=client_context))
     if message_history:
         for msg in message_history[-6:]:
             role = msg["role"]
@@ -508,17 +514,23 @@ def run_agent(
     config: LLMConfig,
     thinking_mode: bool = False,
     message_history: list | None = None,
+    client_context: str = "",
 ) -> str:
     answer, _trace, _structured = run_agent_with_trace(
         user_input=user_input,
         config=config,
         thinking_mode=thinking_mode,
         message_history=message_history,
+        client_context=client_context,
     )
     return answer
 
 
-def build_langchain_messages(user_input: str, message_history: list | None = None) -> list[BaseMessage]:
+def build_langchain_messages(
+    user_input: str,
+    message_history: list | None = None,
+    client_context: str = "",
+) -> list[BaseMessage]:
     lc_messages: list[BaseMessage] = []
     memory_summary = build_memory_summary(message_history)
     if memory_summary:
@@ -530,6 +542,8 @@ def build_langchain_messages(user_input: str, message_history: list | None = Non
                 )
             )
         )
+    if client_context:
+        lc_messages.append(SystemMessage(content=client_context))
     if message_history:
         for msg in message_history[-6:]:
             role = msg["role"]
@@ -553,9 +567,10 @@ def stream_agent_events(
     config: LLMConfig,
     thinking_mode: bool = False,
     message_history: list | None = None,
+    client_context: str = "",
 ):
     agent = build_agent(config, thinking_mode=thinking_mode)
-    lc_messages = build_langchain_messages(user_input, message_history)
+    lc_messages = build_langchain_messages(user_input, message_history, client_context=client_context)
     initial_message_count = len(lc_messages)
     seen_tool_calls: set[str] = set()
     seen_tool_results: set[str] = set()
