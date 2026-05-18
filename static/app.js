@@ -148,6 +148,12 @@ function clampMapOffset(viewport) {
   updateDraggableMap(viewport);
 }
 
+function resetDraggableMap(viewport) {
+  viewport.dataset.offsetX = "0";
+  viewport.dataset.offsetY = "0";
+  updateDraggableMap(viewport);
+}
+
 function initDraggableMaps(root = document) {
   root.querySelectorAll("[data-draggable-map]").forEach((viewport) => {
     if (viewport.dataset.dragReady === "true") return;
@@ -165,6 +171,7 @@ function initDraggableMaps(root = document) {
     let baseX = 0;
     let baseY = 0;
     viewport.addEventListener("pointerdown", (event) => {
+      if (event.target.closest(".poi-map-toolbar")) return;
       dragging = true;
       startX = event.clientX;
       startY = event.clientY;
@@ -190,6 +197,67 @@ function initDraggableMaps(root = document) {
     viewport.addEventListener("pointerup", stopDrag);
     viewport.addEventListener("pointercancel", stopDrag);
   });
+}
+
+function parsePoiRating(item) {
+  const rating = Number.parseFloat(String(item?.rating || "").replace(/[^\d.]/g, ""));
+  return Number.isFinite(rating) ? rating : 0;
+}
+
+function parsePoiCost(item) {
+  const cost = Number.parseFloat(String(item?.cost || "").replace(/[^\d.]/g, ""));
+  return Number.isFinite(cost) ? cost : 999999;
+}
+
+function normalizedPoiType(item) {
+  return String(item?.type || "").trim() || "其他";
+}
+
+function flattenPoiItems(categories = []) {
+  return (categories || []).flatMap((category) =>
+    (category.items || []).map((item) => ({
+      ...item,
+      category: category.category || "",
+    })),
+  );
+}
+
+function matchItineraryPois(day, poiItems) {
+  const haystack = [
+    day.title || "",
+    ...(Array.isArray(day.activities) ? day.activities : []),
+    ...(Array.isArray(day.meals) ? day.meals : []),
+    day.accommodation || "",
+  ].join(" ");
+  const seen = new Set();
+  return poiItems.filter((item) => {
+    if (!item.name || !item.location || seen.has(item.name)) return false;
+    const matched = haystack.includes(item.name) || item.name.includes(day.title || "");
+    if (matched) seen.add(item.name);
+    return matched;
+  }).slice(0, POI_MARKER_LABELS.length);
+}
+
+function renderMiniMap(items, label = "地图") {
+  const locations = items.map((item) => item.location).filter(Boolean);
+  const mapUrl = buildMapImageUrl(locations, { size: "900*420" });
+  if (!mapUrl) return "";
+  const legend = items.map((item, index) => `
+    <span><b>${markerLabel(index)}</b>${escapeHtml(item.name || `${label}${index + 1}`)}</span>
+  `).join("");
+  return `
+    <div class="mini-map-block">
+      <div class="poi-map-viewport mini-map" data-draggable-map>
+        <div class="poi-map-toolbar">
+          <span>${escapeHtml(label)}</span>
+          <button type="button" class="poi-map-reset">重置视角</button>
+          <a class="poi-map-open-link" href="${escapeHtml(mapUrl)}" target="_blank" rel="noreferrer">打开图像</a>
+        </div>
+        <img class="poi-map-preview" src="${escapeHtml(mapUrl)}" alt="${escapeHtml(label)}" loading="lazy" referrerpolicy="no-referrer" draggable="false" onerror="this.closest('.poi-map-viewport').hidden=true">
+      </div>
+      <div class="poi-map-legend">${legend}</div>
+    </div>
+  `;
 }
 
 function renderMarkdown(text) {
@@ -1162,6 +1230,41 @@ messagesEl.addEventListener("scroll", () => {
   if (messagesEl.querySelector(".message.loading .trace-panel:hover")) markTraceInteraction();
 }, { passive: true });
 
+messagesEl.addEventListener("click", (event) => {
+  const resetMapButton = event.target.closest(".poi-map-reset");
+  if (resetMapButton) {
+    const viewport = resetMapButton.closest("[data-draggable-map]");
+    if (viewport) resetDraggableMap(viewport);
+    return;
+  }
+
+  const filterButton = event.target.closest(".poi-filter-chip");
+  if (filterButton) {
+    filterButton.classList.toggle("active");
+    const category = filterButton.closest("[data-poi-category]");
+    if (category) applyPoiControls(category);
+    return;
+  }
+
+  const filterReset = event.target.closest(".poi-filter-reset");
+  if (filterReset) {
+    const category = filterReset.closest("[data-poi-category]");
+    if (!category) return;
+    category.querySelectorAll(".poi-filter-chip.active").forEach((button) => button.classList.remove("active"));
+    const sort = category.querySelector(".poi-sort");
+    const type = category.querySelector(".poi-type-filter");
+    if (sort) sort.value = "default";
+    if (type) type.value = "all";
+    applyPoiControls(category);
+  }
+});
+
+messagesEl.addEventListener("change", (event) => {
+  if (!event.target.matches(".poi-sort, .poi-type-filter")) return;
+  const category = event.target.closest("[data-poi-category]");
+  if (category) applyPoiControls(category);
+});
+
 clearBtn.addEventListener("click", () => {
   if (currentConversationId) {
     deleteConversation(currentConversationId);
@@ -1227,7 +1330,7 @@ function buildStructuredCards(data) {
     html += renderWeatherAlertCards(data.weather_alerts);
   }
   if (data.daily_itinerary && data.daily_itinerary.length) {
-    html += renderItineraryTimeline(data.daily_itinerary);
+    html += renderItineraryTimeline(data.daily_itinerary, data.poi_recommendations || []);
   }
   if (data.transport_options && data.transport_options.length) {
     html += renderTransportCards(data.transport_options);
@@ -1241,6 +1344,7 @@ function buildStructuredCards(data) {
   if (data.poi_recommendations && data.poi_recommendations.length) {
     html += renderPoiCards(data.poi_recommendations);
   }
+  html += renderDataCredibility(data);
   return html;
 }
 
@@ -1298,7 +1402,8 @@ function renderWeatherAlertCards(alerts) {
   return `<div class="card-section"><h3 class="card-section-title">天气预警</h3><div class="weather-alert-grid">${cards}</div></div>`;
 }
 
-function renderItineraryTimeline(itinerary) {
+function renderItineraryTimeline(itinerary, poiCategories = []) {
+  const poiItems = flattenPoiItems(poiCategories);
   const items = itinerary.map(d => `
     <div class="timeline-item">
       <div class="timeline-marker">D${escapeHtml(String(d.day))}</div>
@@ -1307,6 +1412,7 @@ function renderItineraryTimeline(itinerary) {
         ${d.activities && d.activities.length ? `<p class="timeline-activities"><strong>活动</strong> ${d.activities.map(a => escapeHtml(a)).join(" → ")}</p>` : ""}
         ${d.meals && d.meals.length ? `<p class="timeline-meals"><strong>餐饮</strong> ${d.meals.map(m => escapeHtml(m)).join("、")}</p>` : ""}
         ${d.accommodation ? `<p class="timeline-accommodation"><strong>住宿</strong> ${escapeHtml(d.accommodation)}</p>` : ""}
+        ${renderMiniMap(matchItineraryPois(d, poiItems), `Day ${escapeHtml(String(d.day))} 地点关系`)}
       </div>
     </div>
   `).join("");
@@ -1469,10 +1575,39 @@ function renderTipsList(tips) {
 
 function renderPoiCards(categories) {
   if (!categories || !categories.length) return "";
-  const sections = categories.map(cat => {
-    const mapItems = (cat.items || []).filter((item) => item.location).slice(0, POI_MARKER_LABELS.length);
+  const sections = categories.map((cat, catIndex) => {
+    const rawItems = Array.isArray(cat.items) ? cat.items : [];
+    const mapItems = rawItems.filter((item) => item.location).slice(0, POI_MARKER_LABELS.length);
     const locations = mapItems.map((item) => item.location);
     const mapUrl = buildMapImageUrl(locations);
+    const categoryId = `poi-category-${catIndex}`;
+    const typeOptions = [...new Set(rawItems.map(normalizedPoiType))]
+      .filter(Boolean)
+      .slice(0, 10);
+    const controls = rawItems.length ? `
+      <div class="poi-controls" data-poi-controls="${categoryId}">
+        <label>
+          <span>排序</span>
+          <select class="poi-sort">
+            <option value="default">默认</option>
+            <option value="rating">评分优先</option>
+            <option value="cost">人均低优先</option>
+            <option value="name">名称</option>
+          </select>
+        </label>
+        <label>
+          <span>类型</span>
+          <select class="poi-type-filter">
+            <option value="all">全部</option>
+            ${typeOptions.map((type) => `<option value="${escapeHtml(type)}">${escapeHtml(type)}</option>`).join("")}
+          </select>
+        </label>
+        <button type="button" class="poi-filter-chip" data-filter="high-rating">高评分</button>
+        <button type="button" class="poi-filter-chip" data-filter="low-cost">低人均</button>
+        <button type="button" class="poi-filter-chip" data-filter="tel">可联系</button>
+        <button type="button" class="poi-filter-reset">重置</button>
+      </div>
+    ` : "";
     const mapLegend = mapItems.length ? `
       <div class="poi-map-legend">
         ${mapItems.map((item, index) => `
@@ -1480,8 +1615,16 @@ function renderPoiCards(categories) {
         `).join("")}
       </div>
     ` : "";
-    const items = (cat.items || []).map((item, index) => `
-      <div class="poi-card">
+    const items = rawItems.map((item, index) => `
+      <div class="poi-card"
+        data-poi-card
+        data-original-index="${index}"
+        data-rating="${parsePoiRating(item)}"
+        data-cost="${parsePoiCost(item)}"
+        data-type="${escapeHtml(normalizedPoiType(item))}"
+        data-name="${escapeHtml(item.name || "")}"
+        data-location="${escapeHtml(item.location || "")}"
+        data-has-tel="${item.tel ? "true" : "false"}">
         ${index < POI_MARKER_LABELS.length && item.location ? `<span class="poi-card-index">${markerLabel(index)}</span>` : ""}
         <span class="poi-card-type">${escapeHtml(item.type || "")}</span>
         <h4 class="poi-card-name">${escapeHtml(item.name || "")}</h4>
@@ -1490,14 +1633,20 @@ function renderPoiCards(categories) {
       </div>
     `).join("");
     return `
-      <div class="poi-category">
+      <div class="poi-category" data-poi-category="${categoryId}">
         <h4 class="poi-category-title">${escapeHtml(cat.category || "POI推荐")}</h4>
         ${mapUrl ? `
           <div class="poi-map-viewport" data-draggable-map>
+            <div class="poi-map-toolbar">
+              <span>拖动查看周边位置关系</span>
+              <button type="button" class="poi-map-reset">重置视角</button>
+              <a class="poi-map-open-link" href="${escapeHtml(mapUrl)}" target="_blank" rel="noreferrer">打开图像</a>
+            </div>
             <img class="poi-map-preview" src="${escapeHtml(mapUrl)}" alt="${escapeHtml(cat.category || "地点")}地图预览" loading="lazy" referrerpolicy="no-referrer" draggable="false" onerror="this.closest('.poi-map-viewport').hidden=true">
           </div>
         ` : ""}
         ${mapLegend}
+        ${controls}
         <div class="poi-card-grid">${items}</div>
       </div>
     `;
@@ -1519,4 +1668,101 @@ function renderPoiMeta(item) {
       ${item.photo_url ? `<a href="${escapeHtml(item.photo_url)}" target="_blank" rel="noreferrer">图片</a>` : ""}
     </div>
   `;
+}
+
+function applyPoiControls(category) {
+  const controls = category.querySelector(".poi-controls");
+  const grid = category.querySelector(".poi-card-grid");
+  if (!controls || !grid) return;
+
+  const sortValue = controls.querySelector(".poi-sort")?.value || "default";
+  const typeValue = controls.querySelector(".poi-type-filter")?.value || "all";
+  const activeFilters = [...controls.querySelectorAll(".poi-filter-chip.active")]
+    .map((button) => button.dataset.filter);
+  const cards = [...grid.querySelectorAll("[data-poi-card]")];
+
+  cards.forEach((card) => {
+    const rating = Number(card.dataset.rating || 0);
+    const cost = Number(card.dataset.cost || 999999);
+    const type = card.dataset.type || "";
+    const hasTel = card.dataset.hasTel === "true";
+    let visible = true;
+    if (typeValue !== "all" && type !== typeValue) visible = false;
+    if (activeFilters.includes("high-rating") && rating < 4.6) visible = false;
+    if (activeFilters.includes("low-cost") && cost > 120) visible = false;
+    if (activeFilters.includes("tel") && !hasTel) visible = false;
+    card.hidden = !visible;
+  });
+
+  const sortedCards = [...cards].sort((a, b) => {
+    if (sortValue === "rating") return Number(b.dataset.rating || 0) - Number(a.dataset.rating || 0);
+    if (sortValue === "cost") return Number(a.dataset.cost || 999999) - Number(b.dataset.cost || 999999);
+    if (sortValue === "name") return (a.dataset.name || "").localeCompare(b.dataset.name || "", "zh-Hans-CN");
+    return Number(a.dataset.originalIndex || 0) - Number(b.dataset.originalIndex || 0);
+  });
+  sortedCards.forEach((card) => grid.appendChild(card));
+
+  const visibleCards = sortedCards.filter((card) => !card.hidden);
+  visibleCards.forEach((card, index) => {
+    let badge = card.querySelector(".poi-card-index");
+    if (card.dataset.location && !badge && index < POI_MARKER_LABELS.length) {
+      badge = document.createElement("span");
+      badge.className = "poi-card-index";
+      card.prepend(badge);
+    }
+    if (badge) {
+      if (index < POI_MARKER_LABELS.length && card.dataset.location) {
+        badge.textContent = markerLabel(index);
+        badge.hidden = false;
+      } else {
+        badge.hidden = true;
+      }
+    }
+  });
+
+  cards.filter((card) => card.hidden).forEach((card) => {
+    const badge = card.querySelector(".poi-card-index");
+    if (badge) badge.hidden = true;
+  });
+
+  const mappedCards = visibleCards
+    .filter((card) => card.dataset.location)
+    .slice(0, POI_MARKER_LABELS.length);
+  const locations = mappedCards.map((card) => card.dataset.location);
+  const mapUrl = buildMapImageUrl(locations);
+  const viewport = category.querySelector(".poi-map-viewport");
+  const image = category.querySelector(".poi-map-preview");
+  const mapLink = category.querySelector(".poi-map-open-link");
+  const legend = category.querySelector(".poi-map-legend");
+  if (viewport) {
+    viewport.hidden = !mapUrl;
+    resetDraggableMap(viewport);
+  }
+  if (image && mapUrl) {
+    image.src = mapUrl;
+    image.addEventListener("load", () => {
+      if (viewport) clampMapOffset(viewport);
+    }, { once: true });
+  }
+  if (mapLink && mapUrl) {
+    mapLink.href = mapUrl;
+  }
+  if (legend) {
+    legend.innerHTML = mappedCards.map((card, index) => `
+      <span><b>${markerLabel(index)}</b>${escapeHtml(card.dataset.name || `地点${index + 1}`)}</span>
+    `).join("");
+    legend.hidden = !mappedCards.length;
+  }
+
+  let empty = category.querySelector(".poi-empty");
+  if (!visibleCards.length) {
+    if (!empty) {
+      empty = document.createElement("div");
+      empty.className = "poi-empty";
+      empty.textContent = "当前筛选下没有匹配地点";
+      grid.after(empty);
+    }
+  } else if (empty) {
+    empty.remove();
+  }
 }
