@@ -484,64 +484,120 @@ function flattenPoiItems(categories = []) {
   );
 }
 
+function mapItemKey(item) {
+  return compactPlaceText(`${item?.name || ""}|${item?.location || ""}`);
+}
+
+function itineraryMapItems(poiCategories = [], hotels = []) {
+  const items = [
+    ...flattenPoiItems(poiCategories),
+    ...(hotels || []).map((hotel) => ({
+      ...hotel,
+      category: "酒店",
+      type: hotel.stars ? `${hotel.stars}星酒店` : "酒店",
+      address: hotel.area || "",
+      cost: hotel.price_total || hotel.price || "",
+    })),
+  ];
+  const seen = new Set();
+  return items.filter((item) => {
+    if (!item?.location || !item?.name) return false;
+    const key = mapItemKey(item);
+    if (!key || seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
 function compactPlaceText(text) {
   return String(text || "")
     .replace(/[·\-—_（）()【】\[\]{}<>《》,，.。:：;；!！?？\s]/g, "")
     .toLowerCase();
 }
 
-function poiKeywordScore(dayText, item) {
-  const name = compactPlaceText(item.name);
-  const type = compactPlaceText(item.type);
-  const address = compactPlaceText(item.address);
-  if (!name || !item.location) return 0;
-  let score = 0;
-  if (dayText.includes(name)) score += 10;
-  if (name.includes(dayText) && dayText.length >= 2) score += 4;
-  for (let size = Math.min(name.length, 4); size >= 2; size -= 1) {
-    for (let index = 0; index <= name.length - size; index += 1) {
-      const part = name.slice(index, index + size);
-      if (dayText.includes(part)) {
-        score += size;
-        break;
-      }
+const GENERIC_PLACE_ALIASES = new Set([
+  "景点", "酒店", "餐厅", "餐饮", "本地菜", "湖北菜", "湘菜", "川菜", "粤菜", "中餐厅",
+  "购物", "商圈", "商场", "公园", "博物馆", "步行街", "风景名胜", "国家级景点",
+].map(compactPlaceText));
+
+function placeAliases(name) {
+  const raw = String(name || "");
+  const full = compactPlaceText(raw);
+  const parts = raw
+    .split(/[()（）·\-—–|,，、;；:：\s]+/)
+    .map(compactPlaceText)
+    .filter(Boolean);
+  return [...new Set([full, ...parts])]
+    .filter((alias) => alias.length >= 3 && !GENERIC_PLACE_ALIASES.has(alias));
+}
+
+function compactPlaceText(text) {
+  return String(text || "")
+    .replace(/[\s\u3000()（）\[\]{}<>《》【】,，、;；:：|·\-—–→]+/g, "")
+    .toLowerCase();
+}
+
+function isGenericPlaceAlias(alias) {
+  return GENERIC_PLACE_ALIASES.has(alias) || [
+    "\u666f\u70b9", "\u9152\u5e97", "\u9910\u5385", "\u9910\u996e", "\u672c\u5730\u83dc",
+    "\u6e56\u5317\u83dc", "\u6e58\u83dc", "\u5ddd\u83dc", "\u7ca4\u83dc", "\u4e2d\u9910\u5385",
+    "\u8d2d\u7269", "\u5546\u5708", "\u5546\u573a", "\u516c\u56ed", "\u535a\u7269\u9986",
+    "\u6b65\u884c\u8857", "\u98ce\u666f\u540d\u80dc", "\u56fd\u5bb6\u7ea7\u666f\u70b9",
+  ].map(compactPlaceText).includes(alias);
+}
+
+function placeAliases(name) {
+  const raw = String(name || "");
+  const full = compactPlaceText(raw);
+  const parts = raw
+    .split(/[\u0028\u0029\uff08\uff09\u00b7\u002d\u2014\u2013\u007c\u002c\uff0c\u3001\u003b\uff1b\u003a\uff1a\s]+/)
+    .map(compactPlaceText)
+    .filter(Boolean);
+  return [...new Set([full, ...parts])]
+    .filter((alias) => alias.length >= 3 && !isGenericPlaceAlias(alias));
+}
+
+function poiKeywordMatch(text, item) {
+  if (!item?.location) return null;
+  const aliases = placeAliases(item.name);
+  let best = null;
+  aliases.forEach((alias) => {
+    const index = text.indexOf(alias);
+    if (index < 0) return;
+    const score = alias.length;
+    if (!best || index < best.index || (index === best.index && score > best.score)) {
+      best = { index, score };
     }
-    if (score > 0) break;
-  }
-  if (type && dayText.includes(type)) score += 1;
-  if (address && dayText.includes(address.slice(0, 4))) score += 1;
-  return score;
+  });
+  return best;
 }
 
-function fallbackPoisForDay(dayIndex, dayCount, poiItems) {
-  const located = poiItems.filter((item) => item.location);
-  if (!located.length) return [];
-  const perDay = Math.max(2, Math.ceil(Math.min(located.length, POI_MARKER_LABELS.length) / Math.max(1, dayCount)));
-  const start = (dayIndex * perDay) % located.length;
-  const selected = [];
-  for (let offset = 0; offset < located.length && selected.length < perDay; offset += 1) {
-    selected.push(located[(start + offset) % located.length]);
-  }
-  return selected;
-}
-
-function matchItineraryPois(day, poiItems, dayIndex = 0, dayCount = 1) {
-  const haystack = [
-    day.title || "",
+function matchItineraryPois(day, poiItems) {
+  const segments = [
     ...(Array.isArray(day.activities) ? day.activities : []),
     ...(Array.isArray(day.meals) ? day.meals : []),
     day.accommodation || "",
-  ].join(" ");
-  const dayText = compactPlaceText(haystack);
-  const seen = new Set();
-  const matched = poiItems
-    .map((item) => ({ item, score: poiKeywordScore(dayText, item) }))
-    .filter(({ item, score }) => item.location && score > 0 && !seen.has(item.name) && seen.add(item.name))
-    .sort((a, b) => b.score - a.score)
+  ].filter(Boolean);
+  const selected = [];
+  const selectedKeys = new Set();
+  segments.forEach((segment, segmentIndex) => {
+    const text = compactPlaceText(segment);
+    if (!text) return;
+    const matches = poiItems
+      .map((item) => ({ item, match: poiKeywordMatch(text, item) }))
+      .filter(({ item, match }) => match && !selectedKeys.has(mapItemKey(item)))
+      .sort((a, b) => a.match.index - b.match.index || b.match.score - a.match.score);
+    matches.forEach(({ item, match }) => {
+      const key = mapItemKey(item);
+      if (selectedKeys.has(key)) return;
+      selectedKeys.add(key);
+      selected.push({ item, order: segmentIndex * 1000 + match.index, score: match.score });
+    });
+  });
+  return selected
+    .sort((a, b) => a.order - b.order || b.score - a.score)
     .map(({ item }) => item)
     .slice(0, POI_MARKER_LABELS.length);
-  if (matched.length) return matched;
-  return fallbackPoisForDay(dayIndex, dayCount, poiItems);
 }
 
 function renderMiniMap(items, label = "地图") {
@@ -573,7 +629,7 @@ function renderMiniMap(items, label = "地图") {
         <div class="poi-map-fallback">地图暂时加载失败，可点击重试或打开图像查看。</div>
       </div>
       <div class="poi-map-legend">${legend}</div>
-      <div class="mini-map-note">地图基于行程文本和推荐地点自动关联，仅展示相对位置关系。</div>
+      <div class="mini-map-note">地图仅展示当前日文字行程中成功匹配到坐标的地点，连线顺序按文字行程出现顺序排列。</div>
     </div>
   `;
 }
@@ -689,6 +745,93 @@ function appendMessage(role, text, extraClass = "") {
   messagesEl.appendChild(article);
   messagesEl.scrollTop = messagesEl.scrollHeight;
   return article;
+}
+
+function normalizeMarkdownHeading(line) {
+  return String(line || "")
+    .replace(/^#{1,6}\s*/, "")
+    .replace(/^[\s\d.、:：-]+/, "")
+    .trim();
+}
+
+function stripDuplicateItineraryMarkdown(text, data) {
+  if (!data?.daily_itinerary?.length || !text) return text;
+  const lines = String(text).split(/\r?\n/);
+  const itineraryHeading = /^(每日行程|行程安排|每日路线|详细行程|推荐路线|旅行路线|游玩路线|日程规划|行程规划)/;
+  const dayBlockStart = /^(?:#{1,6}\s*)?(?:Day\s*\d+|D\s*\d+|第\s*[一二三四五六七八九十\d]+\s*天)\b/i;
+  const obviousNextPlainSection = /^(天气|交通|酒店|住宿|预算|费用|提醒|提示|注意|景点|地点|餐饮|数据|总结|Weather|Transport|Hotel|Budget|Tips)\b/i;
+  const nextSection = /^#{1,6}\s+\S/;
+  const output = [];
+  let removed = false;
+
+  for (let i = 0; i < lines.length; i += 1) {
+    const trimmed = lines[i].trim();
+    if (dayBlockStart.test(trimmed)) {
+      removed = true;
+      i += 1;
+      while (i < lines.length) {
+        const next = lines[i].trim();
+        if (dayBlockStart.test(next) || nextSection.test(next) || obviousNextPlainSection.test(normalizeMarkdownHeading(next))) {
+          i -= 1;
+          break;
+        }
+        if (!next || /^[-*]\s+/.test(next) || /^\d+[.)、]\s+/.test(next) || /^>\s*/.test(next)) {
+          i += 1;
+          continue;
+        }
+        i -= 1;
+        break;
+      }
+      continue;
+    }
+    const normalized = normalizeMarkdownHeading(lines[i]);
+    if (itineraryHeading.test(normalized)) {
+      removed = true;
+      i += 1;
+      while (i < lines.length && !nextSection.test(lines[i].trim())) {
+        i += 1;
+      }
+      if (i < lines.length) i -= 1;
+      continue;
+    }
+    output.push(lines[i]);
+  }
+
+  return removed ? output.join("\n").replace(/\n{3,}/g, "\n\n").trim() : text;
+}
+
+function removeDuplicateItineraryFromBubble(bubble, data) {
+  if (!bubble?.dataset?.rawText) return;
+  const original = bubble.dataset.rawText;
+  let stripped = stripDuplicateItineraryMarkdown(original, data);
+  if (stripped === original) return;
+  if (!stripped) {
+    stripped = data.summary || "每日行程已整理到下方卡片。";
+  }
+  bubble.dataset.rawText = stripped;
+  bubble.innerHTML = renderMarkdown(stripped);
+}
+
+function hotelPhotoFallback(label = "酒店") {
+  const fallback = document.createElement("div");
+  fallback.className = "hotel-photo hotel-photo-empty";
+  fallback.textContent = "酒店";
+  fallback.setAttribute("aria-label", label || "酒店");
+  return fallback;
+}
+
+function replaceBrokenHotelPhoto(image) {
+  if (!image) return;
+  image.replaceWith(hotelPhotoFallback(image.alt || "酒店"));
+}
+
+function proxiedImageUrl(url) {
+  const value = String(url || "").trim();
+  if (!value) return "";
+  if (/^https?:\/\//i.test(value)) {
+    return `/api/image_proxy?url=${encodeURIComponent(value)}`;
+  }
+  return value;
 }
 
 function renderWelcome() {
@@ -953,7 +1096,7 @@ async function loadConversation(conversationId) {
     messages.forEach((message) => {
       const article = appendMessage(message.role, message.text || "");
       if (message.meta?.structured_data) {
-        renderStructuredCardsInto(article, message.meta.structured_data);
+        renderStructuredCardsInto(article, message.meta.structured_data, message.meta.trace);
       }
       if (message.meta && Object.keys(message.meta).length) {
         appendMeta(article, message.meta);
@@ -1486,7 +1629,7 @@ formEl.addEventListener("submit", async (event) => {
     }
     const responseEl = appendMessage("assistant", finalData?.answer || finalData?.error || "没有返回内容。");
     if (finalData?.structured_data) {
-      renderStructuredCardsInto(responseEl, finalData.structured_data);
+      renderStructuredCardsInto(responseEl, finalData.structured_data, finalData.trace);
     }
     appendMeta(responseEl, finalData || {});
     await loadConversations();
@@ -1672,9 +1815,28 @@ loadConversations().then(() => {
 
 // ====== Structured Card Rendering ======
 
-function renderStructuredCardsInto(article, data) {
+function mergeHotelPhotosFromTrace(data, trace = []) {
+  if (!data?.hotel_options?.length || !Array.isArray(trace)) return data;
+  const hotelToolText = trace
+    .filter((item) => item?.tool === "search_hotel_prices")
+    .map((item) => String(item.result || ""))
+    .join("\n");
+  if (!hotelToolText) return data;
+  data.hotel_options.forEach((hotel) => {
+    const name = String(hotel.name || "").trim();
+    if (!name) return;
+    const line = hotelToolText.split(/\r?\n/).find((item) => item.includes(name) && /https?:\/\/cf\.bstatic\.com/.test(item));
+    const photo = line?.match(/https?:\/\/cf\.bstatic\.com[^\s"'<>]+/)?.[0]?.replace(/[，,。；;]+$/, "");
+    if (photo) hotel.photo_url = photo;
+  });
+  return data;
+}
+
+function renderStructuredCardsInto(article, data, trace = []) {
   const bubble = article.querySelector(".bubble");
   if (!bubble || !data) return;
+  mergeHotelPhotosFromTrace(data, trace);
+  removeDuplicateItineraryFromBubble(bubble, data);
   const html = buildStructuredCards(data);
   if (!html) return;
   const container = document.createElement("div");
@@ -1698,7 +1860,7 @@ function buildStructuredCards(data) {
     html += renderWeatherAlertCards(data.weather_alerts);
   }
   if (data.daily_itinerary && data.daily_itinerary.length) {
-    html += renderItineraryTimeline(data.daily_itinerary, data.poi_recommendations || []);
+    html += renderItineraryTimeline(data.daily_itinerary, data.poi_recommendations || [], data.hotel_options || []);
   }
   if (data.transport_options && data.transport_options.length) {
     html += renderTransportCards(data.transport_options);
@@ -1773,8 +1935,8 @@ function renderWeatherAlertCards(alerts) {
   return `<div class="card-section"><h3 class="card-section-title">天气预警</h3><div class="weather-alert-grid">${cards}</div></div>`;
 }
 
-function renderItineraryTimeline(itinerary, poiCategories = []) {
-  const poiItems = flattenPoiItems(poiCategories);
+function renderItineraryTimeline(itinerary, poiCategories = [], hotels = []) {
+  const poiItems = itineraryMapItems(poiCategories, hotels);
   const items = itinerary.map((d, index) => `
     <div class="timeline-item">
       <div class="timeline-marker">D${escapeHtml(String(d.day))}</div>
@@ -1783,7 +1945,7 @@ function renderItineraryTimeline(itinerary, poiCategories = []) {
         ${d.activities && d.activities.length ? `<p class="timeline-activities"><strong>活动</strong> ${d.activities.map(a => escapeHtml(a)).join(" → ")}</p>` : ""}
         ${d.meals && d.meals.length ? `<p class="timeline-meals"><strong>餐饮</strong> ${d.meals.map(m => escapeHtml(m)).join("、")}</p>` : ""}
         ${d.accommodation ? `<p class="timeline-accommodation"><strong>住宿</strong> ${escapeHtml(d.accommodation)}</p>` : ""}
-        ${renderMiniMap(matchItineraryPois(d, poiItems, index, itinerary.length), `Day ${escapeHtml(String(d.day))} 地点关系`)}
+        ${renderMiniMap(matchItineraryPois(d, poiItems), `Day ${escapeHtml(String(d.day))} 地点关系`)}
       </div>
     </div>
   `).join("");
@@ -1936,7 +2098,7 @@ function renderBudgetCard(budget) {
 
 function renderHotelCards(hotels) {
   const cards = hotels.map((hotel) => {
-    const photo = hotel.photo_url || hotel.photo || "";
+    const photo = proxiedImageUrl(hotel.photo_url || hotel.photo || "");
     let price = String(hotel.price_total || hotel.price || hotel.cost || "价格待确认");
     if (hotel.currency && /^\d+(?:\.\d+)?$/.test(price.trim())) {
       price = `${hotel.currency} ${price}`;
@@ -1953,7 +2115,7 @@ function renderHotelCards(hotels) {
     ].filter(Boolean);
     return `
       <div class="hotel-card">
-        ${photo ? `<img class="hotel-photo" src="${escapeHtml(photo)}" alt="${escapeHtml(hotel.name || "酒店照片")}" loading="lazy" referrerpolicy="no-referrer">` : `<div class="hotel-photo hotel-photo-empty">酒店</div>`}
+        ${photo ? `<img class="hotel-photo" src="${escapeHtml(photo)}" alt="${escapeHtml(hotel.name || "酒店照片")}" loading="lazy" referrerpolicy="no-referrer" onerror="replaceBrokenHotelPhoto(this)">` : `<div class="hotel-photo hotel-photo-empty">酒店</div>`}
         <div class="hotel-body">
           <div class="hotel-head">
             <h4>${escapeHtml(hotel.name || "酒店")}</h4>

@@ -194,7 +194,9 @@ def trace_status_from_result(result: str) -> str:
     if not result:
         return "success"
     lowered = result.lower()
-    error_markers = ("error", "traceback", "exception", "失败", "异常", "报错", "错误")
+    if re.search(r"\b(error|traceback|exception)\b", lowered):
+        return "error"
+    error_markers = ("失败", "异常", "报错", "错误")
     return "error" if any(marker in lowered for marker in error_markers) else "success"
 
 
@@ -422,10 +424,23 @@ def enrich_structured_data_from_trace(structured: dict | None, trace: list[dict]
     """Patch structured data with deterministic tool-result parsing when the LLM omits optional cards."""
     if not structured:
         return structured
-    if not structured.get("hotel_options"):
-        hotels = parse_hotel_options_from_trace(trace)
-        if hotels:
-            structured["hotel_options"] = hotels
+    hotels = parse_hotel_options_from_trace(trace)
+    if hotels and not structured.get("hotel_options"):
+        structured["hotel_options"] = hotels
+    elif hotels and structured.get("hotel_options"):
+        trace_by_name = {
+            re.sub(r"\s+", "", str(hotel.get("name") or "")).lower(): hotel
+            for hotel in hotels
+            if hotel.get("name")
+        }
+        for hotel in structured.get("hotel_options") or []:
+            key = re.sub(r"\s+", "", str(hotel.get("name") or "")).lower()
+            trace_hotel = trace_by_name.get(key)
+            if not trace_hotel:
+                continue
+            for field in ("photo_url", "location", "price_total", "currency", "rating", "review_count", "stars", "checkin", "checkout"):
+                if trace_hotel.get(field):
+                    hotel[field] = trace_hotel[field]
     return structured
 
 

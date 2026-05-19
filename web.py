@@ -3,6 +3,7 @@ import json
 import os
 import sys
 import time
+from urllib.parse import urlparse
 
 import requests
 from dotenv import load_dotenv
@@ -15,7 +16,7 @@ os.environ.setdefault("TRANSFORMERS_NO_ADVISORY_WARNINGS", "1")
 os.environ.setdefault("TRANSFORMERS_VERBOSITY", "error")
 sys.path.insert(0, str(PROJECT_ROOT / "src"))
 
-from flask import Flask, Response, jsonify, render_template, request, stream_with_context  # noqa: E402
+from flask import Flask, Response, abort, jsonify, render_template, request, stream_with_context  # noqa: E402
 
 from travel_agent.agent import (  # noqa: E402
     extract_structured_json,
@@ -113,6 +114,34 @@ def garbled_error_response():
 @app.get("/")
 def index():
     return render_template("index.html")
+
+
+@app.get("/api/image_proxy")
+def image_proxy():
+    image_url = (request.args.get("url") or "").strip()
+    parsed = urlparse(image_url)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        abort(400)
+    try:
+        response = requests.get(
+            image_url,
+            timeout=8,
+            headers={
+                "User-Agent": "Mozilla/5.0",
+                "Accept": "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8",
+            },
+        )
+        response.raise_for_status()
+    except requests.RequestException:
+        abort(502)
+    content_type = response.headers.get("Content-Type", "image/jpeg")
+    if not content_type.startswith("image/"):
+        abort(415)
+    return Response(
+        response.content,
+        mimetype=content_type,
+        headers={"Cache-Control": "public, max-age=86400"},
+    )
 
 
 @app.get("/api/status")
