@@ -20,11 +20,11 @@
 - SSE 流式返回 Agent 执行过程
 - SQLite 历史会话持久化
 - Markdown 回答 + 结构化卡片双输出
-- 高德地图、和风天气、Aviationstack、12306-MCP 等外部数据源接入
+- 高德地图、和风天气、Aviationstack、12306-MCP、Booking.com/RapidAPI 等外部数据源接入
 
 当前工具数量：
 
-- 15 个核心 Python 工具
+- 16 个核心 Python 工具
 - 3 个可选 12306 火车票工具
 - Node.js / npx 不可用时，12306 工具自动降级，不影响其他功能
 
@@ -38,6 +38,7 @@
 - 高德地图 Web 服务 API
 - 和风天气 API
 - Aviationstack API
+- Booking.com / RapidAPI
 - 12306-MCP
 - SQLite
 - 原生 HTML / CSS / JavaScript
@@ -108,9 +109,13 @@ LLM_TEMPERATURE=0.3
 LLM_TIMEOUT=90
 
 AMAP_API_KEY=你的高德地图 Web 服务 Key
+AMAP_JS_API_KEY=你的高德 JS API Key
+AMAP_JS_SECURITY_CODE=你的高德 JS API 安全密钥
 QWEATHER_API_KEY=你的和风天气 API Key
 QWEATHER_API_HOST=你的和风天气专属 API Host
 AVIATIONSTACK_API_KEY=你的 Aviationstack API Key
+RAPIDAPI_KEY=你的 RapidAPI Key
+RAPIDAPI_HOST=booking-com15.p.rapidapi.com
 ```
 
 注意：
@@ -119,6 +124,7 @@ AVIATIONSTACK_API_KEY=你的 Aviationstack API Key
 - DeepSeek 控制台没有请求记录时，先检查前端是否开启了“离线演示”。
 - 和风天气空气质量和天气预警接口可能需要账号权限，接口不可用时工具会降级，不会中断 Agent。
 - Aviationstack 当前只用于航班时刻/状态查询，不提供真实机票价格。
+- Booking.com/RapidAPI 当前用于酒店价格参考，价格和库存以 Booking.com 确认页为准。
 - 12306 工具需要本机 Node.js / npx，首次调用可能较慢。
 
 ## 项目结构
