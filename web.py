@@ -125,12 +125,23 @@ def status():
             "base_url": config.base_url,
             "api_key_loaded": bool(config.api_key),
             "amap_key_loaded": bool(os.getenv("AMAP_API_KEY", "").strip()),
+            "amap_js_key_loaded": bool(os.getenv("AMAP_JS_API_KEY", "").strip()),
+            "amap_js_security_loaded": bool(os.getenv("AMAP_JS_SECURITY_CODE", "").strip()),
             "qweather_key_loaded": bool(os.getenv("QWEATHER_API_KEY", "").strip()),
             "qweather_host_loaded": bool(os.getenv("QWEATHER_API_HOST", "").strip()),
             "train_tools_available": is_train_tools_available(),
             "aviationstack_key_loaded": bool(os.getenv("AVIATIONSTACK_API_KEY", "").strip()),
         }
     )
+
+
+@app.get("/api/amap/js-config")
+def amap_js_config():
+    key = os.getenv("AMAP_JS_API_KEY", "").strip()
+    security_code = os.getenv("AMAP_JS_SECURITY_CODE", "").strip()
+    if not key or not security_code:
+        return jsonify({"enabled": False, "error": "未配置 AMAP_JS_API_KEY 或 AMAP_JS_SECURITY_CODE"}), 200
+    return jsonify({"enabled": True, "key": key, "security_code": security_code})
 
 
 @app.get("/api/amap/ip-location")

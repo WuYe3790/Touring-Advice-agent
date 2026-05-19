@@ -1474,7 +1474,7 @@ textarea {
   left: 10px;
   right: 10px;
   top: 10px;
-  z-index: 2;
+  z-index: 4;
   display: flex;
   align-items: center;
   justify-content: flex-end;
@@ -1521,10 +1521,16 @@ textarea {
   cursor: grabbing;
 }
 
+.poi-map-viewport:has(.amap-live-map.amap-ready) {
+  cursor: default;
+  touch-action: auto;
+}
+
 .poi-map-preview {
   position: absolute;
   left: 50%;
   top: 50%;
+  z-index: 1;
   display: block;
   width: max(100%, 1120px);
   height: auto;
@@ -1534,9 +1540,70 @@ textarea {
   pointer-events: none;
 }
 
+.amap-live-map {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  display: none;
+  background: #f8fafc;
+}
+
+.amap-live-map.amap-ready {
+  z-index: 2;
+  display: block;
+}
+
+.amap-live-map.amap-unavailable {
+  display: none;
+}
+
+.amap-marker-badge {
+  display: inline-grid;
+  min-width: 26px;
+  height: 26px;
+  padding: 0 8px;
+  place-items: center;
+  border: 2px solid #ffffff;
+  border-radius: 999px;
+  background: #2563eb;
+  color: #ffffff;
+  font-size: 12px;
+  font-weight: 900;
+  line-height: 1;
+  box-shadow: 0 10px 22px rgba(15, 23, 42, 0.2);
+  cursor: pointer;
+  transition: transform 0.15s ease, background 0.15s ease;
+}
+
+.amap-marker-badge.active {
+  background: #0f766e;
+  transform: scale(1.08);
+}
+
+.amap-info-window {
+  display: grid;
+  gap: 4px;
+  min-width: 160px;
+  max-width: 240px;
+  color: #101828;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.amap-info-window strong {
+  font-size: 13px;
+}
+
+.amap-info-window span,
+.amap-info-window p {
+  margin: 0;
+  color: #667085;
+}
+
 .poi-map-fallback {
   position: absolute;
   inset: 0;
+  z-index: 3;
   display: none;
   place-items: center;
   padding: 56px 18px 18px;
@@ -1670,7 +1737,7 @@ textarea {
   border: 1px solid var(--line);
   border-radius: 12px;
   background: #ffffff;
-  transition: border-color 0.15s ease;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease, transform 0.15s ease;
 }
 
 .poi-card[hidden],
@@ -1688,6 +1755,12 @@ textarea {
 
 .poi-card:hover {
   border-color: rgba(37, 99, 235, 0.4);
+}
+
+.poi-card.map-highlight {
+  border-color: rgba(37, 99, 235, 0.65);
+  box-shadow: 0 14px 28px rgba(37, 99, 235, 0.12);
+  transform: translateY(-1px);
 }
 
 .poi-card-type {

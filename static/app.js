@@ -26,6 +26,9 @@ let currentLocationContext = loadLocationContext();
 let activeController = null;
 let inputTipTimer = null;
 let traceInteractionUntil = 0;
+let amapLoaderPromise = null;
+const liveMapQueue = [];
+let liveMapQueueRunning = false;
 
 if (inputSuggestToggle) {
   inputSuggestToggle.checked = localStorage.getItem(INPUT_SUGGEST_KEY) !== "false";
@@ -122,6 +125,56 @@ function buildMapImageUrl(locations, options = {}) {
   return `/api/amap/static-map?${params.toString()}`;
 }
 
+function htmlAttrJson(value) {
+  return JSON.stringify(value || [])
+    .replace(/&/g, "&amp;")
+    .replace(/"/g, "&quot;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/'/g, "&#39;");
+}
+
+function buildMapPoints(items) {
+  return (items || [])
+    .map((item, index) => {
+      const point = parseLngLat(item.location);
+      if (!point) return null;
+      return {
+        label: markerLabel(index),
+        name: item.name || `地点${index + 1}`,
+        type: item.type || item.category || "",
+        address: item.address || "",
+        location: item.location,
+        lng: point.lng,
+        lat: point.lat,
+      };
+    })
+    .filter(Boolean);
+}
+
+async function loadAmapApi() {
+  if (window.AMap) return window.AMap;
+  if (amapLoaderPromise) return amapLoaderPromise;
+  amapLoaderPromise = (async () => {
+    const response = await fetch("/api/amap/js-config");
+    const config = await response.json();
+    if (!config.enabled || !config.key || !config.security_code) {
+      throw new Error(config.error || "高德 JS API 未配置");
+    }
+    window._AMapSecurityConfig = { securityJsCode: config.security_code };
+    await new Promise((resolve, reject) => {
+      const script = document.createElement("script");
+      script.src = `https://webapi.amap.com/maps?v=2.0&key=${encodeURIComponent(config.key)}&plugin=AMap.Scale,AMap.ToolBar`;
+      script.async = true;
+      script.onload = resolve;
+      script.onerror = () => reject(new Error("高德 JS API 加载失败"));
+      document.head.appendChild(script);
+    });
+    return window.AMap;
+  })();
+  return amapLoaderPromise;
+}
+
 function markTraceInteraction() {
   traceInteractionUntil = Date.now() + 700;
 }
@@ -157,8 +210,14 @@ function resetDraggableMap(viewport) {
 function setMapLoadState(image, state) {
   const viewport = image?.closest(".poi-map-viewport");
   if (!viewport) return;
-  viewport.classList.toggle("map-error", state === "error");
+  const liveMap = viewport.querySelector(".amap-live-map");
+  const liveReady = liveMap?.classList.contains("amap-ready");
+  const liveUnavailable = liveMap?.classList.contains("amap-unavailable");
+  viewport.classList.toggle("map-error", state === "error" && (!liveMap || liveUnavailable));
   viewport.classList.toggle("map-loaded", state === "loaded");
+  if (state === "loaded" && liveReady) {
+    viewport.classList.remove("map-error");
+  }
 }
 
 function initDraggableMaps(root = document) {
@@ -179,6 +238,7 @@ function initDraggableMaps(root = document) {
     let baseY = 0;
     viewport.addEventListener("pointerdown", (event) => {
       if (event.target.closest(".poi-map-toolbar")) return;
+      if (event.target.closest(".amap-live-map.amap-ready")) return;
       dragging = true;
       startX = event.clientX;
       startY = event.clientY;
@@ -203,6 +263,200 @@ function initDraggableMaps(root = document) {
     };
     viewport.addEventListener("pointerup", stopDrag);
     viewport.addEventListener("pointercancel", stopDrag);
+  });
+}
+
+function markerContent(point, active = false) {
+  return `<div class="amap-marker-badge${active ? " active" : ""}">${escapeHtml(point.label)}</div>`;
+}
+
+function mapInfoContent(point) {
+  return `
+    <div class="amap-info-window">
+      <strong>${escapeHtml(point.label)}. ${escapeHtml(point.name)}</strong>
+      ${point.type ? `<span>${escapeHtml(point.type)}</span>` : ""}
+      ${point.address ? `<p>${escapeHtml(point.address)}</p>` : ""}
+    </div>
+  `;
+}
+
+function highlightPoiCard(scope, label) {
+  scope.querySelectorAll("[data-map-label]").forEach((card) => {
+    card.classList.toggle("map-highlight", card.dataset.mapLabel === label);
+  });
+}
+
+function highlightLiveMarker(scope, label) {
+  const liveMap = scope.querySelector(".amap-live-map");
+  if (!liveMap?._amapMarkers?.length) return;
+  liveMap._amapMarkers.forEach((marker) => {
+    const point = marker.getExtData();
+    marker.setContent(markerContent(point, point?.label === label));
+  });
+}
+
+function focusLiveMapPoint(scope, label, options = {}) {
+  const liveMap = scope?.querySelector?.(".amap-live-map");
+  if (!liveMap?._amapInstance || !liveMap?._amapMarkers?.length || !label) return;
+  const marker = liveMap._amapMarkers.find((item) => item.getExtData()?.label === label);
+  if (!marker) return;
+  const point = marker.getExtData();
+  highlightLiveMarker(scope, label);
+  highlightPoiCard(scope, label);
+  if (options.pan !== false) {
+    liveMap._amapInstance.setZoomAndCenter(Math.max(liveMap._amapInstance.getZoom(), 14), marker.getPosition(), false, 300);
+  }
+  if (options.openInfo !== false && liveMap._amapInfoWindow) {
+    liveMap._amapInfoWindow.setContent(mapInfoContent(point));
+    liveMap._amapInfoWindow.open(liveMap._amapInstance, marker.getPosition());
+  }
+}
+
+function liveMapScope(container) {
+  return container.closest("[data-poi-category]") || container.closest(".timeline-content") || document;
+}
+
+function parseLiveMapPoints(container) {
+  try {
+    return JSON.parse(container.dataset.points || "[]");
+  } catch {
+    return [];
+  }
+}
+
+function markLiveMapUnavailable(container) {
+  container.classList.remove("amap-ready");
+  container.classList.add("amap-unavailable");
+  const viewport = container.closest(".poi-map-viewport");
+  const image = viewport?.querySelector(".poi-map-preview");
+  if (!image || !image.complete || image.naturalWidth === 0) {
+    viewport?.classList.add("map-error");
+  }
+}
+
+function destroyLiveMap(container) {
+  if (!container) return;
+  if (container._amapInstance) {
+    container._amapInstance.destroy();
+  }
+  container._amapInstance = null;
+  container._amapMarkers = [];
+  container._amapInfoWindow = null;
+  container._amapPolyline = null;
+  container.innerHTML = "";
+  container.classList.remove("amap-ready", "amap-unavailable", "amap-container");
+  container.dataset.mapReady = "";
+  container.dataset.mapQueued = "";
+}
+
+function renderLiveMap(container, points, options = {}) {
+  if (!container) return;
+  if (!points.length) {
+    destroyLiveMap(container);
+    return;
+  }
+  if (container._amapInstance) {
+    destroyLiveMap(container);
+  }
+  loadAmapApi()
+    .then((AMap) => {
+      container.classList.remove("amap-unavailable");
+      container.innerHTML = "";
+      const centerPoint = points[0];
+      const map = new AMap.Map(container, {
+        zoom: points.length > 1 ? 11 : 14,
+        center: [centerPoint.lng, centerPoint.lat],
+        resizeEnable: true,
+        viewMode: "2D",
+      });
+      map.addControl(new AMap.Scale());
+      map.addControl(new AMap.ToolBar({ liteStyle: true }));
+
+      const infoWindow = new AMap.InfoWindow({ offset: new AMap.Pixel(0, -28) });
+      const markers = points.map((point) => {
+        const marker = new AMap.Marker({
+          position: [point.lng, point.lat],
+          content: markerContent(point),
+          offset: new AMap.Pixel(-13, -13),
+          extData: point,
+          zIndex: 120,
+        });
+        marker.on("click", () => {
+          const scope = liveMapScope(container);
+          focusLiveMapPoint(scope, point.label, { pan: false, openInfo: true });
+        });
+        marker.on("mouseover", () => {
+          const scope = liveMapScope(container);
+          focusLiveMapPoint(scope, point.label, { pan: false, openInfo: false });
+        });
+        marker.on("mouseout", () => marker.setContent(markerContent(point, false)));
+        return marker;
+      });
+      map.add(markers);
+
+      let line = null;
+      if (options.polyline && points.length > 1) {
+        const path = points.map((point) => [point.lng, point.lat]);
+        line = new AMap.Polyline({
+          path,
+          strokeColor: "#0f766e",
+          strokeWeight: 6,
+          strokeOpacity: 0.9,
+          lineJoin: "round",
+          lineCap: "round",
+          showDir: true,
+          zIndex: 80,
+        });
+        map.add(line);
+      }
+      if (markers.length > 1) {
+        map.setFitView(line ? [...markers, line] : markers, false, [58, 36, 36, 36]);
+      }
+      container._amapInstance = map;
+      container._amapMarkers = markers;
+      container._amapInfoWindow = infoWindow;
+      container._amapPolyline = line;
+      container.classList.add("amap-ready");
+      container.closest(".poi-map-viewport")?.classList.remove("map-error");
+    })
+    .catch(() => {
+      markLiveMapUnavailable(container);
+    });
+}
+
+function ensureLiveMap(container, options = {}) {
+  if (!container || container.dataset.mapReady === "true") return;
+  const points = parseLiveMapPoints(container);
+  if (!points.length) return;
+  container.dataset.mapReady = "true";
+  renderLiveMap(container, points, { polyline: container.dataset.polyline === "true", ...options });
+}
+
+function scheduleLiveMap(container) {
+  if (!container || container.dataset.mapReady === "true" || container.dataset.mapQueued === "true") return;
+  container.dataset.mapQueued = "true";
+  liveMapQueue.push(container);
+  if (!liveMapQueueRunning) {
+    processLiveMapQueue();
+  }
+}
+
+function processLiveMapQueue() {
+  liveMapQueueRunning = true;
+  const container = liveMapQueue.shift();
+  if (!container) {
+    liveMapQueueRunning = false;
+    return;
+  }
+  container.dataset.mapQueued = "";
+  ensureLiveMap(container);
+  window.setTimeout(processLiveMapQueue, 260);
+}
+
+function initLiveMaps(root = document) {
+  root.querySelectorAll("[data-live-map]").forEach((container) => {
+    if (container.dataset.mapReady === "true") return;
+    scheduleLiveMap(container);
   });
 }
 
@@ -292,6 +546,7 @@ function matchItineraryPois(day, poiItems, dayIndex = 0, dayCount = 1) {
 function renderMiniMap(items, label = "地图") {
   const locations = items.map((item) => item.location).filter(Boolean);
   const mapUrl = buildMapImageUrl(locations, { size: "900*420" });
+  const points = buildMapPoints(items);
   if (!mapUrl) {
     return `
       <div class="mini-map-block mini-map-empty">
@@ -312,6 +567,7 @@ function renderMiniMap(items, label = "地图") {
           <button type="button" class="poi-map-reset">重置视角</button>
           <a class="poi-map-open-link" href="${escapeHtml(mapUrl)}" target="_blank" rel="noreferrer">打开图像</a>
         </div>
+        <div class="amap-live-map" data-live-map data-polyline="true" data-points="${htmlAttrJson(points)}"></div>
         <img class="poi-map-preview" src="${escapeHtml(mapUrl)}" alt="${escapeHtml(label)}" loading="eager" referrerpolicy="no-referrer" draggable="false" onload="setMapLoadState(this, 'loaded')" onerror="setMapLoadState(this, 'error')">
         <div class="poi-map-fallback">地图暂时加载失败，可点击重试或打开图像查看。</div>
       </div>
@@ -1291,7 +1547,33 @@ messagesEl.addEventListener("scroll", () => {
   if (messagesEl.querySelector(".message.loading .trace-panel:hover")) markTraceInteraction();
 }, { passive: true });
 
+messagesEl.addEventListener("mouseover", (event) => {
+  const card = event.target.closest(".poi-card[data-map-label]");
+  if (!card?.dataset.mapLabel) return;
+  const category = card.closest("[data-poi-category]");
+  if (!category) return;
+  focusLiveMapPoint(category, card.dataset.mapLabel, { pan: false, openInfo: false });
+});
+
+messagesEl.addEventListener("mouseout", (event) => {
+  const card = event.target.closest(".poi-card[data-map-label]");
+  if (!card?.dataset.mapLabel) return;
+  const category = card.closest("[data-poi-category]");
+  if (!category || card.contains(event.relatedTarget)) return;
+  category.querySelectorAll(".poi-card.map-highlight").forEach((item) => item.classList.remove("map-highlight"));
+  highlightLiveMarker(category, "");
+});
+
 messagesEl.addEventListener("click", (event) => {
+  const poiCard = event.target.closest(".poi-card[data-map-label]");
+  if (poiCard?.dataset.mapLabel && !event.target.closest("a, button, select, input, textarea")) {
+    const category = poiCard.closest("[data-poi-category]");
+    if (category) {
+      focusLiveMapPoint(category, poiCard.dataset.mapLabel, { pan: true, openInfo: true });
+      return;
+    }
+  }
+
   const resetMapButton = event.target.closest(".poi-map-reset");
   if (resetMapButton) {
     const viewport = resetMapButton.closest("[data-draggable-map]");
@@ -1303,6 +1585,14 @@ messagesEl.addEventListener("click", (event) => {
   if (retryMapButton) {
     const viewport = retryMapButton.closest("[data-draggable-map]");
     const image = viewport?.querySelector(".poi-map-preview");
+    const liveMap = viewport?.querySelector(".amap-live-map");
+    if (liveMap) {
+      const points = parseLiveMapPoints(liveMap);
+      destroyLiveMap(liveMap);
+      if (points.length) {
+        ensureLiveMap(liveMap, { polyline: liveMap.dataset.polyline === "true" });
+      }
+    }
     if (image) {
       setMapLoadState(image, "loading");
       const cleanSrc = image.src.split("&_retry=")[0];
@@ -1388,6 +1678,7 @@ function renderStructuredCardsInto(article, data) {
   container.innerHTML = html;
   bubble.appendChild(container);
   initDraggableMaps(container);
+  initLiveMaps(container);
 }
 
 function buildStructuredCards(data) {
@@ -1699,6 +1990,7 @@ function renderPoiCards(categories) {
     const mapItems = rawItems.filter((item) => item.location).slice(0, POI_MARKER_LABELS.length);
     const locations = mapItems.map((item) => item.location);
     const mapUrl = buildMapImageUrl(locations);
+    const mapPoints = buildMapPoints(mapItems);
     const categoryId = `poi-category-${catIndex}`;
     const typeOptions = [...new Set(rawItems.map(normalizedPoiType))]
       .filter(Boolean)
@@ -1742,7 +2034,9 @@ function renderPoiCards(categories) {
         data-cost="${parsePoiCost(item)}"
         data-type="${escapeHtml(normalizedPoiType(item))}"
         data-name="${escapeHtml(item.name || "")}"
+        data-address="${escapeHtml(item.address || "")}"
         data-location="${escapeHtml(item.location || "")}"
+        data-map-label="${index < POI_MARKER_LABELS.length && item.location ? markerLabel(index) : ""}"
         data-has-tel="${item.tel ? "true" : "false"}">
         ${index < POI_MARKER_LABELS.length && item.location ? `<span class="poi-card-index">${markerLabel(index)}</span>` : ""}
         <span class="poi-card-type">${escapeHtml(item.type || "")}</span>
@@ -1762,6 +2056,7 @@ function renderPoiCards(categories) {
               <button type="button" class="poi-map-reset">重置视角</button>
               <a class="poi-map-open-link" href="${escapeHtml(mapUrl)}" target="_blank" rel="noreferrer">打开图像</a>
             </div>
+            <div class="amap-live-map" data-live-map data-points="${htmlAttrJson(mapPoints)}"></div>
             <img class="poi-map-preview" src="${escapeHtml(mapUrl)}" alt="${escapeHtml(cat.category || "地点")}地图预览" loading="lazy" referrerpolicy="no-referrer" draggable="false" onload="setMapLoadState(this, 'loaded')" onerror="setMapLoadState(this, 'error')">
             <div class="poi-map-fallback">地图暂时加载失败，可点击重试或打开图像查看。</div>
           </div>
@@ -1833,15 +2128,20 @@ function applyPoiControls(category) {
     }
     if (badge) {
       if (index < POI_MARKER_LABELS.length && card.dataset.location) {
-        badge.textContent = markerLabel(index);
+        const label = markerLabel(index);
+        card.dataset.mapLabel = label;
+        badge.textContent = label;
         badge.hidden = false;
       } else {
+        card.dataset.mapLabel = "";
         badge.hidden = true;
       }
     }
   });
 
   cards.filter((card) => card.hidden).forEach((card) => {
+    card.dataset.mapLabel = "";
+    card.classList.remove("map-highlight");
     const badge = card.querySelector(".poi-card-index");
     if (badge) badge.hidden = true;
   });
@@ -1873,6 +2173,29 @@ function applyPoiControls(category) {
       <span><b>${markerLabel(index)}</b>${escapeHtml(card.dataset.name || `地点${index + 1}`)}</span>
     `).join("");
     legend.hidden = !mappedCards.length;
+  }
+
+  const liveMap = category.querySelector(".amap-live-map");
+  if (liveMap) {
+    const points = mappedCards.map((card, index) => {
+      const point = parseLngLat(card.dataset.location);
+      if (!point) return null;
+      return {
+        label: markerLabel(index),
+        name: card.dataset.name || `地点${index + 1}`,
+        type: card.dataset.type || "",
+        address: card.dataset.address || "",
+        location: card.dataset.location,
+        lng: point.lng,
+        lat: point.lat,
+      };
+    }).filter(Boolean);
+    liveMap.dataset.points = JSON.stringify(points);
+    destroyLiveMap(liveMap);
+    if (points.length) {
+      liveMap.dataset.mapReady = "true";
+      renderLiveMap(liveMap, points);
+    }
   }
 
   let empty = category.querySelector(".poi-empty");
