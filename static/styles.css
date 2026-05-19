@@ -1097,6 +1097,14 @@ textarea {
   height: clamp(180px, 26vh, 280px);
 }
 
+.mini-map .amap-marker-badge {
+  min-width: 32px;
+  height: 32px;
+  padding: 0 10px;
+  font-size: 14px;
+  border-width: 2.5px;
+}
+
 .mini-map-note {
   margin-top: -2px;
   color: #98a2b3;

@@ -343,7 +343,6 @@ function destroyLiveMap(container) {
   container._amapInstance = null;
   container._amapMarkers = [];
   container._amapInfoWindow = null;
-  container._amapPolyline = null;
   container.innerHTML = "";
   container.classList.remove("amap-ready", "amap-unavailable", "amap-container");
   container.dataset.mapReady = "";
@@ -394,34 +393,12 @@ function renderLiveMap(container, points, options = {}) {
         return marker;
       });
       map.add(markers);
-
-      let line = null;
-      if (options.polyline) {
-        const polyPoints = (options.polylinePoints && options.polylinePoints.length > 1)
-          ? options.polylinePoints
-          : (points.length > 1 ? points : null);
-        if (polyPoints && polyPoints.length > 1) {
-          const path = polyPoints.map((point) => [point.lng, point.lat]);
-          line = new AMap.Polyline({
-            path,
-            strokeColor: "#0f766e",
-            strokeWeight: 6,
-            strokeOpacity: 0.9,
-            lineJoin: "round",
-            lineCap: "round",
-            showDir: true,
-            zIndex: 80,
-          });
-          map.add(line);
-        }
-      }
       if (markers.length > 1) {
-        map.setFitView(line ? [...markers, line] : markers, false, [58, 36, 36, 36]);
+        map.setFitView(markers, false, [58, 36, 36, 36]);
       }
       container._amapInstance = map;
       container._amapMarkers = markers;
       container._amapInfoWindow = infoWindow;
-      container._amapPolyline = line;
       container.classList.add("amap-ready");
       container.closest(".poi-map-viewport")?.classList.remove("map-error");
     })
@@ -435,17 +412,7 @@ function ensureLiveMap(container, options = {}) {
   const points = parseLiveMapPoints(container);
   if (!points.length) return;
   container.dataset.mapReady = "true";
-  let polylinePoints = null;
-  if (container.dataset.polylinePoints) {
-    try {
-      polylinePoints = JSON.parse(container.dataset.polylinePoints);
-    } catch {}
-  }
-  renderLiveMap(container, points, {
-    polyline: container.dataset.polyline === "true",
-    polylinePoints: polylinePoints && polylinePoints.length ? polylinePoints : null,
-    ...options,
-  });
+  renderLiveMap(container, points, { ...options });
 }
 
 function scheduleLiveMap(container) {
@@ -569,21 +536,42 @@ function placeAliases(name) {
     .map(compactPlaceText)
     .filter(Boolean);
   return [...new Set([full, ...parts])]
-    .filter((alias) => alias.length >= 3 && !isGenericPlaceAlias(alias));
+    .filter((alias) => alias.length >= 2 && !isGenericPlaceAlias(alias));
 }
 
 function poiKeywordMatch(text, item) {
   if (!item?.location) return null;
   const aliases = placeAliases(item.name);
   let best = null;
+
+  // Forward match: POI aliases appear in text (high precision, weighted x10)
   aliases.forEach((alias) => {
     const index = text.indexOf(alias);
     if (index < 0) return;
-    const score = alias.length;
+    const score = alias.length * 10;
     if (!best || index < best.index || (index === best.index && score > best.score)) {
       best = { index, score };
     }
   });
+
+  // Reverse match: text n-grams appear in POI compact name (fallback for
+  // cases like text="西湖" vs POI="杭州西湖风景名胜区")
+  if (!best) {
+    const poiCompact = compactPlaceText(item.name);
+    for (let n = Math.min(4, text.length); n >= 2; n--) {
+      for (let i = 0; i <= text.length - n; i++) {
+        const ngram = text.slice(i, i + n);
+        if (isGenericPlaceAlias(ngram)) continue;
+        if (poiCompact.indexOf(ngram) >= 0) {
+          if (!best || n > best.score || (n === best.score && i < best.index)) {
+            best = { index: i, score: n };
+          }
+        }
+      }
+      if (best) break; // prefer longer n-gram matches
+    }
+  }
+
   return best;
 }
 
@@ -596,7 +584,6 @@ function matchItineraryPois(day, poiItems) {
     ...mealSegments,
     accSegment,
   ].filter(Boolean);
-  const activityCount = activitySegments.length;
   const selected = [];
   const selectedKeys = new Set();
   segments.forEach((segment, segmentIndex) => {
@@ -606,30 +593,36 @@ function matchItineraryPois(day, poiItems) {
       .map((item) => ({ item, match: poiKeywordMatch(text, item) }))
       .filter(({ item, match }) => match && !selectedKeys.has(mapItemKey(item)))
       .sort((a, b) => a.match.index - b.match.index || b.match.score - a.match.score);
+    // Track which text positions already have a POI assigned, so n-gram
+    // reverse matches don't fan out one place name into many unrelated POIs.
+    const covered = new Set();
     matches.forEach(({ item, match }) => {
       const key = mapItemKey(item);
       if (selectedKeys.has(key)) return;
+      // For reverse (n-gram) matches, skip if this text position is already
+      // covered by another POI from the same segment.  Forward matches
+      // (score >= 10) are explicit and always kept.
+      if (match.score < 10) {
+        const pos = match.index;
+        if (covered.has(pos)) return;
+        for (let d = -2; d <= match.score; d++) covered.add(pos + d);
+      }
       selectedKeys.add(key);
-      const isRoute = segmentIndex < activityCount;
-      selected.push({ item, order: segmentIndex * 1000 + match.index, score: match.score, isRoute });
+      selected.push({ item, order: segmentIndex * 1000 + match.index, score: match.score });
     });
   });
-  const sorted = selected
+  return selected
     .sort((a, b) => a.order - b.order || b.score - a.score)
+    .map(({ item }) => item)
     .slice(0, POI_MARKER_LABELS.length);
-  return {
-    items: sorted.map(({ item }) => item),
-    routeItems: sorted.filter(({ isRoute }) => isRoute).map(({ item }) => item),
-  };
 }
 
 function renderMiniMap(matched, label = "地图") {
+  // Accept both plain array (current) and legacy { items, routeItems } object.
   const items = Array.isArray(matched) ? matched : (matched.items || []);
-  const routeItems = Array.isArray(matched) ? matched : (matched.routeItems || []);
-  const allLocations = items.map((item) => item.location).filter(Boolean);
-  const mapUrl = buildMapImageUrl(allLocations, { size: "900*420" });
-  const allPoints = buildMapPoints(items);
-  const routePoints = routeItems.length ? buildMapPoints(routeItems) : [];
+  const locations = items.map((item) => item.location).filter(Boolean);
+  const mapUrl = buildMapImageUrl(locations, { size: "900*420" });
+  const points = buildMapPoints(items);
   if (!mapUrl) {
     return `
       <div class="mini-map-block mini-map-empty">
@@ -650,12 +643,12 @@ function renderMiniMap(matched, label = "地图") {
           <button type="button" class="poi-map-reset">重置视角</button>
           <a class="poi-map-open-link" href="${escapeHtml(mapUrl)}" target="_blank" rel="noreferrer">打开图像</a>
         </div>
-        <div class="amap-live-map" data-live-map data-polyline="true" data-points="${htmlAttrJson(allPoints)}" data-polyline-points="${htmlAttrJson(routePoints)}"></div>
+        <div class="amap-live-map" data-live-map data-points="${htmlAttrJson(points)}"></div>
         <img class="poi-map-preview" src="${escapeHtml(mapUrl)}" alt="${escapeHtml(label)}" loading="eager" referrerpolicy="no-referrer" draggable="false" onload="setMapLoadState(this, 'loaded')" onerror="setMapLoadState(this, 'error')">
         <div class="poi-map-fallback">地图暂时加载失败，可点击重试或打开图像查看。</div>
       </div>
       <div class="poi-map-legend">${legend}</div>
-      <div class="mini-map-note">地图仅展示当前日文字行程中成功匹配到坐标的地点，连线顺序按文字行程出现顺序排列。</div>
+      <div class="mini-map-note">地图展示当前日行程中匹配到的所有地点标签，具体路线请根据文字描述自行规划。</div>
     </div>
   `;
 }
