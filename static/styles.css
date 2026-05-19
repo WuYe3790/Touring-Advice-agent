@@ -1376,6 +1376,7 @@ textarea {
 }
 
 .hotel-card {
+  position: relative;
   display: grid;
   grid-template-columns: 96px 1fr;
   min-height: 128px;
@@ -1400,6 +1401,33 @@ textarea {
   color: var(--accent-dark);
   font-size: 14px;
   font-weight: 800;
+}
+
+.hotel-photo-skeleton {
+  position: absolute;
+  inset: 0;
+  left: 0;
+  width: 96px;
+  height: 100%;
+  background: linear-gradient(110deg, #eff6ff 30%, #dbeafe 50%, #eff6ff 70%);
+  background-size: 200% 100%;
+  animation: shimmer 1.6s ease-in-out infinite;
+  pointer-events: none;
+  z-index: 1;
+}
+
+.hotel-photo-loaded {
+  position: relative;
+  z-index: 2;
+}
+
+.hotel-photo-loaded ~ .hotel-photo-skeleton {
+  display: none;
+}
+
+@keyframes shimmer {
+  0% { background-position: 200% 0; }
+  100% { background-position: -200% 0; }
 }
 
 .hotel-body {

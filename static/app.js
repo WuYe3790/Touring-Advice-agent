@@ -396,19 +396,24 @@ function renderLiveMap(container, points, options = {}) {
       map.add(markers);
 
       let line = null;
-      if (options.polyline && points.length > 1) {
-        const path = points.map((point) => [point.lng, point.lat]);
-        line = new AMap.Polyline({
-          path,
-          strokeColor: "#0f766e",
-          strokeWeight: 6,
-          strokeOpacity: 0.9,
-          lineJoin: "round",
-          lineCap: "round",
-          showDir: true,
-          zIndex: 80,
-        });
-        map.add(line);
+      if (options.polyline) {
+        const polyPoints = (options.polylinePoints && options.polylinePoints.length > 1)
+          ? options.polylinePoints
+          : (points.length > 1 ? points : null);
+        if (polyPoints && polyPoints.length > 1) {
+          const path = polyPoints.map((point) => [point.lng, point.lat]);
+          line = new AMap.Polyline({
+            path,
+            strokeColor: "#0f766e",
+            strokeWeight: 6,
+            strokeOpacity: 0.9,
+            lineJoin: "round",
+            lineCap: "round",
+            showDir: true,
+            zIndex: 80,
+          });
+          map.add(line);
+        }
       }
       if (markers.length > 1) {
         map.setFitView(line ? [...markers, line] : markers, false, [58, 36, 36, 36]);
@@ -430,7 +435,17 @@ function ensureLiveMap(container, options = {}) {
   const points = parseLiveMapPoints(container);
   if (!points.length) return;
   container.dataset.mapReady = "true";
-  renderLiveMap(container, points, { polyline: container.dataset.polyline === "true", ...options });
+  let polylinePoints = null;
+  if (container.dataset.polylinePoints) {
+    try {
+      polylinePoints = JSON.parse(container.dataset.polylinePoints);
+    } catch {}
+  }
+  renderLiveMap(container, points, {
+    polyline: container.dataset.polyline === "true",
+    polylinePoints: polylinePoints && polylinePoints.length ? polylinePoints : null,
+    ...options,
+  });
 }
 
 function scheduleLiveMap(container) {
@@ -573,11 +588,15 @@ function poiKeywordMatch(text, item) {
 }
 
 function matchItineraryPois(day, poiItems) {
+  const activitySegments = Array.isArray(day.activities) ? day.activities : [];
+  const mealSegments = Array.isArray(day.meals) ? day.meals : [];
+  const accSegment = day.accommodation || "";
   const segments = [
-    ...(Array.isArray(day.activities) ? day.activities : []),
-    ...(Array.isArray(day.meals) ? day.meals : []),
-    day.accommodation || "",
+    ...activitySegments,
+    ...mealSegments,
+    accSegment,
   ].filter(Boolean);
+  const activityCount = activitySegments.length;
   const selected = [];
   const selectedKeys = new Set();
   segments.forEach((segment, segmentIndex) => {
@@ -591,19 +610,26 @@ function matchItineraryPois(day, poiItems) {
       const key = mapItemKey(item);
       if (selectedKeys.has(key)) return;
       selectedKeys.add(key);
-      selected.push({ item, order: segmentIndex * 1000 + match.index, score: match.score });
+      const isRoute = segmentIndex < activityCount;
+      selected.push({ item, order: segmentIndex * 1000 + match.index, score: match.score, isRoute });
     });
   });
-  return selected
+  const sorted = selected
     .sort((a, b) => a.order - b.order || b.score - a.score)
-    .map(({ item }) => item)
     .slice(0, POI_MARKER_LABELS.length);
+  return {
+    items: sorted.map(({ item }) => item),
+    routeItems: sorted.filter(({ isRoute }) => isRoute).map(({ item }) => item),
+  };
 }
 
-function renderMiniMap(items, label = "地图") {
-  const locations = items.map((item) => item.location).filter(Boolean);
-  const mapUrl = buildMapImageUrl(locations, { size: "900*420" });
-  const points = buildMapPoints(items);
+function renderMiniMap(matched, label = "地图") {
+  const items = Array.isArray(matched) ? matched : (matched.items || []);
+  const routeItems = Array.isArray(matched) ? matched : (matched.routeItems || []);
+  const allLocations = items.map((item) => item.location).filter(Boolean);
+  const mapUrl = buildMapImageUrl(allLocations, { size: "900*420" });
+  const allPoints = buildMapPoints(items);
+  const routePoints = routeItems.length ? buildMapPoints(routeItems) : [];
   if (!mapUrl) {
     return `
       <div class="mini-map-block mini-map-empty">
@@ -624,7 +650,7 @@ function renderMiniMap(items, label = "地图") {
           <button type="button" class="poi-map-reset">重置视角</button>
           <a class="poi-map-open-link" href="${escapeHtml(mapUrl)}" target="_blank" rel="noreferrer">打开图像</a>
         </div>
-        <div class="amap-live-map" data-live-map data-polyline="true" data-points="${htmlAttrJson(points)}"></div>
+        <div class="amap-live-map" data-live-map data-polyline="true" data-points="${htmlAttrJson(allPoints)}" data-polyline-points="${htmlAttrJson(routePoints)}"></div>
         <img class="poi-map-preview" src="${escapeHtml(mapUrl)}" alt="${escapeHtml(label)}" loading="eager" referrerpolicy="no-referrer" draggable="false" onload="setMapLoadState(this, 'loaded')" onerror="setMapLoadState(this, 'error')">
         <div class="poi-map-fallback">地图暂时加载失败，可点击重试或打开图像查看。</div>
       </div>
@@ -822,7 +848,94 @@ function hotelPhotoFallback(label = "酒店") {
 
 function replaceBrokenHotelPhoto(image) {
   if (!image) return;
+  const skeleton = image.parentElement?.querySelector(".hotel-photo-skeleton");
+  if (skeleton) skeleton.remove();
   image.replaceWith(hotelPhotoFallback(image.alt || "酒店"));
+}
+
+function retryOrReplaceHotelPhoto(image) {
+  if (!image) return;
+  const retries = Number(image.dataset.retries || 0);
+  if (retries < 2) {
+    image.dataset.retries = String(retries + 1);
+    const delay = 800 * (retries + 1);
+    setTimeout(() => {
+      const src = image.dataset.src || "";
+      if (!src) {
+        replaceBrokenHotelPhoto(image);
+        return;
+      }
+      image.addEventListener("load", () => {
+        image.classList.add("hotel-photo-loaded");
+        const skeleton = image.parentElement?.querySelector(".hotel-photo-skeleton");
+        if (skeleton) skeleton.remove();
+      }, { once: true });
+      image.src = "";
+      void image.offsetHeight;
+      image.src = src;
+    }, delay);
+    return;
+  }
+  replaceBrokenHotelPhoto(image);
+}
+
+function loadHotelImagesBatched(root = document) {
+  const images = [...root.querySelectorAll(".hotel-photo[data-src]")];
+  if (!images.length) return;
+  const pending = images.filter((img) => !img.dataset.loading && !img.classList.contains("hotel-photo-loaded"));
+  if (!pending.length) return;
+
+  const BATCH_SIZE = 2;
+  const BATCH_DELAY = 300;
+
+  const observer = new IntersectionObserver((entries) => {
+    const visible = pending.filter((img) => {
+      const rect = img.getBoundingClientRect();
+      return rect.top < window.innerHeight + 300 && rect.bottom > -300;
+    });
+    if (!visible.length) return;
+
+    visible.forEach((img, index) => {
+      if (img.dataset.loading === "true" || img.classList.contains("hotel-photo-loaded")) return;
+      img.dataset.loading = "true";
+      const batch = Math.floor(index / BATCH_SIZE);
+      setTimeout(() => {
+        const src = img.dataset.src;
+        if (!src || img.classList.contains("hotel-photo-loaded")) return;
+        img.addEventListener("load", () => {
+          img.classList.add("hotel-photo-loaded");
+          const skeleton = img.parentElement?.querySelector(".hotel-photo-skeleton");
+          if (skeleton) skeleton.remove();
+        }, { once: true });
+        img.src = src;
+      }, batch * BATCH_DELAY);
+    });
+
+    const allDone = pending.every((img) => img.classList.contains("hotel-photo-loaded") || img.dataset.loading === "true");
+    if (allDone) observer.disconnect();
+  }, { rootMargin: "300px" });
+
+  pending.forEach((img) => observer.observe(img));
+  setTimeout(() => {
+    const stillPending = pending.filter((img) => !img.dataset.loading && !img.classList.contains("hotel-photo-loaded"));
+    if (stillPending.length) {
+      stillPending.forEach((img, index) => {
+        if (img.dataset.loading === "true") return;
+        img.dataset.loading = "true";
+        const batch = Math.floor(index / BATCH_SIZE);
+        setTimeout(() => {
+          const src = img.dataset.src;
+          if (!src || img.classList.contains("hotel-photo-loaded")) return;
+          img.addEventListener("load", () => {
+            img.classList.add("hotel-photo-loaded");
+            const skeleton = img.parentElement?.querySelector(".hotel-photo-skeleton");
+            if (skeleton) skeleton.remove();
+          }, { once: true });
+          img.src = src;
+        }, batch * BATCH_DELAY);
+      });
+    }
+  }, 1200);
 }
 
 function proxiedImageUrl(url) {
@@ -1845,6 +1958,7 @@ function renderStructuredCardsInto(article, data, trace = []) {
   bubble.appendChild(container);
   initDraggableMaps(container);
   initLiveMaps(container);
+  loadHotelImagesBatched(container);
 }
 
 function buildStructuredCards(data) {
@@ -2115,7 +2229,7 @@ function renderHotelCards(hotels) {
     ].filter(Boolean);
     return `
       <div class="hotel-card">
-        ${photo ? `<img class="hotel-photo" src="${escapeHtml(photo)}" alt="${escapeHtml(hotel.name || "酒店照片")}" loading="lazy" referrerpolicy="no-referrer" onerror="replaceBrokenHotelPhoto(this)">` : `<div class="hotel-photo hotel-photo-empty">酒店</div>`}
+        ${photo ? `<img class="hotel-photo" data-src="${escapeHtml(photo)}" alt="${escapeHtml(hotel.name || "酒店照片")}" referrerpolicy="no-referrer" onerror="retryOrReplaceHotelPhoto(this)"><div class="hotel-photo-skeleton"></div>` : `<div class="hotel-photo hotel-photo-empty">酒店</div>`}
         <div class="hotel-body">
           <div class="hotel-head">
             <h4>${escapeHtml(hotel.name || "酒店")}</h4>
