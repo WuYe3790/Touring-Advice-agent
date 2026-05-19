@@ -60,12 +60,13 @@ BASE_SYSTEM_PROMPT_TEMPLATE = """
     "legs": [{"mode": "第一段车次或交通方式", "from": "起点", "to": "终点", "departure_time": "出发", "arrival_time": "到达", "duration": "耗时", "cost_estimate": "票价", "status": "余票或状态", "notes": "说明"}]
   }],
   "daily_itinerary": [{"day": 1, "title": "当日主题", "activities": ["活动1", "活动2"], "meals": ["餐饮建议"], "accommodation": "住宿建议"}],
+  "hotel_options": [{"name": "酒店名", "area": "所在区域", "price_total": "总价", "currency": "币种", "rating": "评分", "review_count": "评论数", "stars": "星级", "checkin": "入住时间", "checkout": "离店时间", "location": "经纬度", "photo_url": "图片链接", "data_source": "数据源", "notes": "限制说明"}],
   "budget": {"total": 0, "breakdown": {"项目": 0}, "currency": "CNY", "notes": "预算说明"},
   "tips": ["提示1", "提示2"],
   "poi_recommendations": [{"category": "分类标签", "items": [{"name": "地点名", "type": "类型", "address": "地址", "rating": "评分", "cost": "人均费用", "tel": "电话", "location": "经纬度", "map_url": "地图链接"}]}]
 }
 ```
-要求：内容必须与你的 Markdown 回答保持一致；无数据时使用空数组 []；json 代码块必须放在回答最末尾；不要在 json 之后添加任何文本；不要因为用户要求简短、快速或只回答一句话而省略 json 代码块。weather_alerts 用于天气灾害预警卡片；如果工具返回当前无预警，可写入一条 status 为 "no_active" 的记录；如果接口权限不可用，除非用户专门询问预警，否则可保持 []。transport_options 可以使用 category/data_source/status/departure_time/arrival_time/legs 等可选字段；中转火车方案必须把两段或多段车次写入 legs，方便前端渲染中转卡片。
+要求：内容必须与你的 Markdown 回答保持一致；无数据时使用空数组 []；json 代码块必须放在回答最末尾；不要在 json 之后添加任何文本；不要因为用户要求简短、快速或只回答一句话而省略 json 代码块。weather_alerts 用于天气灾害预警卡片；如果工具返回当前无预警，可写入一条 status 为 "no_active" 的记录；如果接口权限不可用，除非用户专门询问预警，否则可保持 []。hotel_options 用于真实酒店价格卡片；非酒店查询时必须为 []。transport_options 可以使用 category/data_source/status/departure_time/arrival_time/legs 等可选字段；中转火车方案必须把两段或多段车次写入 legs，方便前端渲染中转卡片。
 """
 
 BASE_SYSTEM_PROMPT = BASE_SYSTEM_PROMPT_TEMPLATE.replace("__DEFAULT_DATE__", DEFAULT_DATE)
@@ -93,16 +94,18 @@ REAL_DATA_TOOL_PROMPT = """
 11. search_nearby_pois 可用高德地图围绕某个景点、车站或酒店查询周边餐饮、住宿、咖啡、地铁站等 POI。
 12. get_place_location 可用高德地图核验地点地址和经纬度。
 13. get_map_marker_link 可生成不暴露 API Key 的高德地图地点标记链接，适合放入 POI 或注意事项。
-14. search_train_tickets 可用 12306 查询真实火车票余票（高铁/动车/普速），支持按车型筛选和数量限制。
-15. search_interline_train_tickets 可用 12306 查询中转余票方案，适合直达车次少、不合适或用户明确接受中转时调用。
-16. get_train_route 可用 12306 查询特定车次的经停站和时刻表。
-17. search_flight_options 可用 Aviationstack 查询航班时刻/状态，适合远距离跨城出行的飞机备选；注意它不提供机票价格。
+14. search_hotel_prices 可用 Booking.com RapidAPI 查询真实酒店价格，适合住宿推荐、酒店价格对比和预算估算；价格为接口返回的实时参考价，最终库存/税费/支付价以 Booking.com 为准。
+15. search_train_tickets 可用 12306 查询真实火车票余票（高铁/动车/普速），支持按车型筛选和数量限制。
+16. search_interline_train_tickets 可用 12306 查询中转余票方案，适合直达车次少、不合适或用户明确接受中转时调用。
+17. get_train_route 可用 12306 查询特定车次的经停站和时刻表。
+18. search_flight_options 可用 Aviationstack 查询航班时刻/状态，适合远距离跨城出行的飞机备选；注意它不提供机票价格。
 
 使用要求：
 - 当用户只是要求查某一种信息时，严格选择对应工具并窄回答：查航班只调用 search_flight_options；查高铁/火车只调用 search_train_tickets 或 search_interline_train_tickets；查天气只调用天气工具；查市内换乘只调用 get_public_transit_plan/步行/骑行等路线工具；查地点或周边只调用地点/POI 工具。不要因为识别出了城市就自动查询天气、景点、预算或完整日程。
 - 单点查询的正文不要输出完整规划模板，不要包含“每日行程”“住宿建议”“预算分析”“景点推荐”等无关小节；只给结果、数据来源和必要限制说明。JSON 中也只填相关字段，例如航班查询只填 transport_options 和 tips；周边餐饮只填 poi_recommendations 和 tips；天气查询只填 weather/weather_alerts 和 tips。
-- 单点查询时，summary 用一句话概括查询结果；daily_itinerary 必须为 []；budget 使用 {"total": 0, "breakdown": {}, "currency": "CNY", "notes": ""}；无关字段必须为空数组，不要为了卡片好看而填充。
-- 当用户请求具体目的地完整旅行规划时，除了天气和交通，优先调用 search_travel_pois 至少 3 次：分别搜索"景点"、"餐饮"或"本地菜"、"商圈"或"购物"。如果行程涉及住宿，还应搜索"酒店"。
+- 单点查询时，summary 用一句话概括查询结果；daily_itinerary 必须为 []；hotel_options 只有酒店查询才填写，否则为 []；budget 使用 {"total": 0, "breakdown": {}, "currency": "CNY", "notes": ""}；无关字段必须为空数组，不要为了卡片好看而填充。
+- 当用户请求具体目的地完整旅行规划时，除了天气和交通，优先调用 search_travel_pois 至少 3 次：分别搜索"景点"、"餐饮"或"本地菜"、"商圈"或"购物"。如果行程涉及住宿，应优先调用 search_hotel_prices 查询真实酒店价格；也可以补充 search_travel_pois 搜索"酒店"作为 POI/位置参考，但不要用高德酒店 POI 冒充真实房价。
+- 当用户询问"酒店/住宿/住哪里/酒店价格/附近酒店/多少钱一晚"时，调用 search_hotel_prices；如果用户给出城市、日期和人数，按用户参数查询；如果缺少入住/离店日期，在完整规划中可用行程日期推断，单点查询中应要求补充日期或使用默认明天/后天并明确说明。最终回答必须说明 Booking.com/RapidAPI 价格只是实时参考，最终以平台确认页为准。酒店结果必须写入 hotel_options。
 - 当用户行程包含较多户外活动、老人儿童出行、骑行步行、海边/山地/恶劣天气风险，或用户询问是否适合出行/天气预警时，可调用 get_air_quality_info 和 get_weather_alerts，并把可用的空气质量写入 tips，把天气预警写入 weather_alerts；如果工具返回"暂不可用"，不要把它当作规划失败，只需忽略或简短说明。用户单独查询天气预警时，只回答预警情况，不要扩展行程。
 - 当行程包含车站到酒店、酒店到景点、景点到景点等城市内移动时，优先调用 get_public_transit_plan 获取真实公交/地铁换乘参考，并按距离和用户偏好补充 get_walking_route 或 get_bicycling_route：1.5 公里内优先比较步行，1-8 公里可比较骑行，携带行李或天气不好时优先公共交通/网约车。若工具结果同时包含"地铁优先"和"公交备选"，最终回答中必须至少保留一个公交备选方案，不能只写地铁。
 - 当用户询问多个地点到同一目的地的远近、住宿区域选择、景点顺序或去车站/机场耗时时，调用 get_route_distance_matrix 做距离/耗时对比，不要凭感觉排序。
@@ -116,7 +119,7 @@ REAL_DATA_TOOL_PROMPT = """
 - 用户提到"高铁"时传 train_filter_flags="G"，提到"动车"时传"D"。将 search_train_tickets 返回的车次号、出发/到达时刻、座型余票、票价如实地写入 transport_options（每条一个方案：mode 为"高铁 G车次号"，duration 为历时，cost_estimate 为座型+票价）和 daily_itinerary 的交通步骤中。
 - 若 search_train_tickets 没有查到合适直达车，或用户提到"中转/换乘/怎么转车"，应调用 search_interline_train_tickets；不得自行编造中转车次。中转方案写入 transport_options 时 category 使用 "interline_train"，总方案写在外层，每一段车次写入 legs，并尽量包含换乘站、换乘等待时间、总耗时、各段票价/余票。
 - 当用户明确提到"飞机/航班/机场/机票"时，应调用 search_flight_options。跨城距离较远（例如驾车超过约500公里、火车耗时较长、或目的地适合航空出行）时，也应把 search_flight_options 作为备选工具调用。航班工具参数优先传机场 IATA 三字码；若不确定，可传常见城市名，工具内置部分中国城市机场映射。若航班工具提示"不支持按指定日期查询，已自动回退"，最终回答必须说明这是近期/实时航班参考，不要声称它完整覆盖用户指定日期。最终回答必须说明 Aviationstack 不提供票价，航班方案只作为时刻/状态参考。
-- 最终回答应说明关键数据来源，例如"天气和空气质量来自和风天气""地点和路线来自高德地图""火车票来自12306""航班来自 Aviationstack"。
+- 最终回答应说明关键数据来源，例如"天气和空气质量来自和风天气""地点和路线来自高德地图""酒店价格来自 Booking.com/RapidAPI""火车票来自12306""航班来自 Aviationstack"。
 """
 
 
@@ -347,6 +350,7 @@ def extract_structured_json(text: str) -> dict | None:
         "weather_alerts",
         "transport_options",
         "daily_itinerary",
+        "hotel_options",
         "budget",
         "tips",
         "poi_recommendations",
@@ -359,6 +363,70 @@ def extract_structured_json(text: str) -> dict | None:
         except json.JSONDecodeError:
             continue
     return None
+
+
+def parse_hotel_options_from_trace(trace: list[dict]) -> list[dict]:
+    """Extract hotel cards from search_hotel_prices tool output as a fallback."""
+    hotels: list[dict] = []
+    for item in trace:
+        if item.get("tool") != "search_hotel_prices":
+            continue
+        result = str(item.get("result") or "")
+        for line in result.splitlines():
+            if not re.match(r"^\d+\.\s+", line):
+                continue
+            text = re.sub(r"^\d+\.\s+", "", line).strip()
+            parts = [part.strip() for part in text.split("｜") if part.strip()]
+            if len(parts) < 2:
+                continue
+            hotel = {
+                "name": parts[0],
+                "area": parts[1] if len(parts) > 1 else "",
+                "price_total": "",
+                "currency": "",
+                "rating": "",
+                "review_count": "",
+                "stars": "",
+                "checkin": "",
+                "checkout": "",
+                "location": "",
+                "photo_url": "",
+                "data_source": "Booking.com/RapidAPI",
+                "notes": "价格为接口返回参考值，最终以 Booking.com 确认页为准。",
+            }
+            for part in parts[2:]:
+                if part.startswith("总价 "):
+                    hotel["price_total"] = part.removeprefix("总价 ").strip()
+                    currency_match = re.match(r"([A-Z]{3})\s+", hotel["price_total"])
+                    if currency_match:
+                        hotel["currency"] = currency_match.group(1)
+                elif part.startswith("评分 "):
+                    hotel["rating"] = part.removeprefix("评分 ").strip()
+                elif part.startswith("评论 "):
+                    hotel["review_count"] = part.removeprefix("评论 ").strip()
+                elif part.startswith("星级 "):
+                    hotel["stars"] = part.removeprefix("星级 ").strip()
+                elif part.startswith("坐标 "):
+                    hotel["location"] = part.removeprefix("坐标 ").strip()
+                elif part.startswith("入住 "):
+                    hotel["checkin"] = part.removeprefix("入住 ").strip()
+                elif part.startswith("离店 "):
+                    hotel["checkout"] = part.removeprefix("离店 ").strip()
+                elif part.startswith("照片 "):
+                    hotel["photo_url"] = part.removeprefix("照片 ").strip()
+            hotels.append(hotel)
+    return hotels
+
+
+def enrich_structured_data_from_trace(structured: dict | None, trace: list[dict]) -> dict | None:
+    """Patch structured data with deterministic tool-result parsing when the LLM omits optional cards."""
+    if not structured:
+        return structured
+    if not structured.get("hotel_options"):
+        hotels = parse_hotel_options_from_trace(trace)
+        if hotels:
+            structured["hotel_options"] = hotels
+    return structured
 
 
 def strip_structured_json(text: str) -> str:
@@ -511,9 +579,10 @@ def run_agent_with_trace(
     messages = response["messages"]
     print_agent_trace(messages)
     answer = extract_final_answer(messages)
-    structured = extract_structured_json(answer)
+    trace = collect_agent_trace(messages)
+    structured = enrich_structured_data_from_trace(extract_structured_json(answer), trace)
     cleaned = strip_structured_json(answer)
-    return cleaned, collect_agent_trace(messages), structured
+    return cleaned, trace, structured
 
 
 def run_agent(
@@ -691,7 +760,7 @@ def stream_agent_events(
                         "elapsed_ms": elapsed_ms(run_started_at),
                     }
 
-    structured_data = extract_structured_json(final_answer)
+    structured_data = enrich_structured_data_from_trace(extract_structured_json(final_answer), public_trace(trace))
     cleaned_answer = strip_structured_json(final_answer) or final_answer
 
     yield {
@@ -774,6 +843,7 @@ def run_offline_demo(user_input: str) -> str:
                 "accommodation": "",
             },
         ],
+        "hotel_options": [],
         "budget": {
             "total": 1260,
             "breakdown": {"住宿": 600, "餐饮": 360, "门票": 300},

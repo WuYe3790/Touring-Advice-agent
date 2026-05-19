@@ -269,6 +269,7 @@ Agent 的最终回答末尾会输出 JSON，后端提取为 `structured_data`，
 | `get_traffic_status` | 高德 | 实时路况 |
 | `search_travel_pois` | 高德 | 全城景点、餐饮、商圈、酒店 POI |
 | `search_nearby_pois` | 高德 | 指定地点周边 POI |
+| `search_hotel_prices` | Booking.com/RapidAPI | 真实酒店价格参考 |
 | `get_place_location` | 高德 | 地点解析和坐标 |
 | `get_map_marker_link` | 高德 URI | 无 Key 地图链接 |
 
@@ -337,7 +338,7 @@ Get-CimInstance Win32_Process |
 - Flask 当前是开发服务器，只适合本地演示。
 - DeepSeek API-level thinking 暂未开启，深度思考模式依赖 Pro 模型和提示词。
 - 航班工具不提供真实票价。
-- 酒店真实价格 API 暂未接入，当前不做真实酒店价格查询。
+- 酒店价格已接入 Booking.com/RapidAPI，但价格、库存、税费和最终支付价仍以 Booking.com 确认页为准。
 - 和风空气质量/天气预警依赖账号权限，403 时会降级。
 - 高德静态地图是图片，不是真正交互式地图；当前支持拖动图片视角，但不能缩放或加载新瓦片。
 - 12306-MCP 首次调用可能因 npx 下载或初始化而较慢。
@@ -365,6 +366,17 @@ Get-CimInstance Win32_Process |
 - 进入 Phase 4：接入高德 JS API 配置，POI 地图和每日行程小地图优先使用真实高德地图渲染。
 - 保留静态地图兜底，避免 JS API 加载失败时地图区域空白。
 - 补齐 POI 筛选/排序后的地图同步逻辑，筛选后的卡片、图例和 marker 编号会一起变化。
+
+## 今日工作记录（2026-05-19）
+
+- 检查 `esakrissa/hotels_mcp_server`，确认其核心能力来自 RapidAPI 上的 Booking.com API。
+- 实测 RapidAPI Key 可请求 Booking.com 酒店目的地和酒店价格接口。
+- 未原样引入 MCP 子进程，而是将其核心查询逻辑改造为项目内置 LangChain 工具 `search_hotel_prices`。
+- 新增 `RAPIDAPI_KEY` / `RAPIDAPI_HOST` 配置项和 `/api/status` 状态检测。
+- 新增中文城市别名兜底，例如“杭州”可自动回退到 `Hangzhou` 查询。
+- 新增 `hotel_options` 结构化 JSON 字段和前端“酒店价格参考”卡片。
+- 执行报告支持展示 `search_hotel_prices` 工具调用。
+- 酒店价格数据可信度说明已加入前端卡片：价格为 Booking.com/RapidAPI 实时参考，最终以确认页为准。
 
 ## 后续优化路线
 

@@ -131,6 +131,7 @@ def status():
             "qweather_host_loaded": bool(os.getenv("QWEATHER_API_HOST", "").strip()),
             "train_tools_available": is_train_tools_available(),
             "aviationstack_key_loaded": bool(os.getenv("AVIATIONSTACK_API_KEY", "").strip()),
+            "rapidapi_key_loaded": bool(os.getenv("RAPIDAPI_KEY", "").strip()),
         }
     )
 

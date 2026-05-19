@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>LangChain 旅游规划智能体</title>
-  <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}?v=20260519-map-queue">
+  <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}?v=20260519-hotel">
 </head>
 <body>
   <div class="bg-grid"></div>
@@ -47,6 +47,10 @@
         <div class="status-row">
           <span>Aviationstack</span>
           <strong id="aviationStatus">读取中...</strong>
+        </div>
+        <div class="status-row">
+          <span>酒店价格</span>
+          <strong id="hotelStatus">读取中...</strong>
         </div>
         <div class="status-row">
           <span>默认出发地</span>
@@ -108,6 +112,6 @@
   </main>
 
   <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
-  <script src="{{ url_for('static', filename='app.js') }}?v=20260519-map-queue"></script>
+  <script src="{{ url_for('static', filename='app.js') }}?v=20260519-hotel"></script>
 </body>
 </html>

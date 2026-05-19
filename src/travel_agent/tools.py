@@ -36,6 +36,7 @@ WEATHER_CODES = {
 AMAP_BASE_URL = "https://restapi.amap.com/v3"
 # Aviationstack free-tier keys commonly reject HTTPS with HTTP 403.
 AVIATIONSTACK_BASE_URL = "http://api.aviationstack.com/v1"
+RAPIDAPI_BOOKING_HOST = "booking-com15.p.rapidapi.com"
 COORDINATE_RE = re.compile(r"^\s*(-?\d+(?:\.\d+)?)\s*,\s*(-?\d+(?:\.\d+)?)\s*$")
 AIRPORT_IATA_BY_CITY = {
     "北京": "PEK",
@@ -78,6 +79,31 @@ AIRPORT_IATA_BY_CITY = {
     "拉萨": "LXA",
     "张家界": "DYG",
 }
+HOTEL_CITY_ALIASES = {
+    "北京": "Beijing",
+    "上海": "Shanghai",
+    "广州": "Guangzhou",
+    "深圳": "Shenzhen",
+    "杭州": "Hangzhou",
+    "宁波": "Ningbo",
+    "郑州": "Zhengzhou",
+    "西安": "Xi'an",
+    "南京": "Nanjing",
+    "成都": "Chengdu",
+    "重庆": "Chongqing",
+    "武汉": "Wuhan",
+    "长沙": "Changsha",
+    "苏州": "Suzhou",
+    "厦门": "Xiamen",
+    "青岛": "Qingdao",
+    "天津": "Tianjin",
+    "昆明": "Kunming",
+    "大理": "Dali",
+    "丽江": "Lijiang",
+    "三亚": "Sanya",
+    "海口": "Haikou",
+    "舟山": "Zhoushan",
+}
 
 
 def _get_env_key(name: str) -> str:
@@ -97,6 +123,19 @@ def _amap_key() -> str:
 
 def _aviationstack_key() -> str:
     return _get_env_key("AVIATIONSTACK_API_KEY")
+
+
+def _rapidapi_key() -> str:
+    return _get_env_key("RAPIDAPI_KEY")
+
+
+def _rapidapi_host() -> str:
+    return _get_env_key("RAPIDAPI_HOST") or RAPIDAPI_BOOKING_HOST
+
+
+def _rapidapi_headers() -> dict[str, str]:
+    host = _rapidapi_host()
+    return {"X-RapidAPI-Key": _rapidapi_key(), "X-RapidAPI-Host": host}
 
 
 def _qweather_key() -> str:
@@ -389,6 +428,53 @@ def _normalize_airport_iata(value: str) -> str:
     for suffix in ("市", "机场", "国际机场", "机场T1", "机场T2", "机场T3"):
         cleaned = cleaned.replace(suffix, "")
     return AIRPORT_IATA_BY_CITY.get(cleaned, text)
+
+
+def _hotel_city_queries(city: str) -> list[str]:
+    raw = str(city or "").strip()
+    if not raw:
+        return []
+    normalized = raw.removesuffix("市")
+    alias = HOTEL_CITY_ALIASES.get(normalized) or HOTEL_CITY_ALIASES.get(raw)
+    return list(dict.fromkeys(query for query in (raw, normalized, alias or "") if query))
+
+
+def _booking_search_destinations(city: str) -> list[dict]:
+    if not _rapidapi_key():
+        return []
+    host = _rapidapi_host()
+    for query in _hotel_city_queries(city):
+        data = _request_json(
+            f"https://{host}/api/v1/hotels/searchDestination",
+            {"query": query},
+            timeout=20,
+            headers=_rapidapi_headers(),
+        )
+        items = data.get("data") if isinstance(data.get("data"), list) else []
+        if items:
+            return items
+    return []
+
+
+def _booking_destination_id(destination: dict) -> tuple[str, str]:
+    dest_id = destination.get("dest_id") or destination.get("city_ufi") or destination.get("id")
+    dest_type = str(destination.get("dest_type") or "city").upper()
+    if dest_type == "HOTEL":
+        search_type = "HOTEL"
+    elif dest_type in {"LANDMARK", "DISTRICT", "REGION", "AIRPORT"}:
+        search_type = dest_type
+    else:
+        search_type = "CITY"
+    return str(dest_id or ""), search_type
+
+
+def _format_money(value: object, currency: str = "CNY") -> str:
+    try:
+        amount = float(value)
+    except (TypeError, ValueError):
+        return "价格未知"
+    amount_text = str(round(amount)) if amount >= 100 else f"{amount:.2f}".rstrip("0").rstrip(".")
+    return f"{currency} {amount_text}"
 
 
 def _format_flight_time(value: object) -> str:
@@ -1435,6 +1521,130 @@ def search_nearby_pois(
 
 
 @tool
+def search_hotel_prices(
+    city: str,
+    checkin_date: str,
+    checkout_date: str,
+    adults: int = 2,
+    rooms: int = 1,
+    limit: int = 6,
+    currency: str = "CNY",
+) -> str:
+    """使用 Booking.com RapidAPI 查询真实酒店价格，适合住宿推荐、预算估算和酒店价格对比。
+
+    Args:
+        city: 目的地城市，例如 "杭州"、"西安"、"Ningbo"。
+        checkin_date: 入住日期，YYYY-MM-DD。
+        checkout_date: 离店日期，YYYY-MM-DD。
+        adults: 成人数量。
+        rooms: 房间数量。
+        limit: 返回酒店数量，建议 3-8。
+        currency: 价格币种，默认 CNY。
+    """
+    start = _log_tool_start(
+        "search_hotel_prices",
+        city=city,
+        checkin_date=checkin_date,
+        checkout_date=checkout_date,
+        adults=adults,
+        rooms=rooms,
+        limit=limit,
+        currency=currency,
+    )
+    if not _rapidapi_key():
+        result = "酒店价格查询不可用：未配置 RAPIDAPI_KEY。"
+        _log_tool_end("search_hotel_prices", start, result)
+        return result
+
+    try:
+        destinations = _booking_search_destinations(city)
+        if not destinations:
+            result = f"酒店价格查询失败：Booking.com 未找到“{city}”对应目的地。"
+            _log_tool_end("search_hotel_prices", start, result)
+            return result
+
+        destination = destinations[0]
+        dest_id, search_type = _booking_destination_id(destination)
+        if not dest_id:
+            result = f"酒店价格查询失败：未能取得“{city}”的 Booking.com 目的地 ID。"
+            _log_tool_end("search_hotel_prices", start, result)
+            return result
+
+        safe_limit = max(1, min(int(limit), 10))
+        host = _rapidapi_host()
+        data = _request_json(
+            f"https://{host}/api/v1/hotels/searchHotels",
+            {
+                "dest_id": dest_id,
+                "search_type": search_type,
+                "arrival_date": checkin_date,
+                "departure_date": checkout_date,
+                "adults": max(1, int(adults)),
+                "room_qty": max(1, int(rooms)),
+                "currency_code": currency,
+            },
+            timeout=30,
+            headers=_rapidapi_headers(),
+        )
+        hotels = ((data.get("data") or {}).get("hotels") or []) if isinstance(data.get("data"), dict) else []
+        if data.get("status") is False or not hotels:
+            result = (
+                f"酒店价格查询无结果：{city} {checkin_date} 至 {checkout_date}。"
+                f"RapidAPI 返回：{data.get('message', '无详细说明')}"
+            )
+            _log_tool_end("search_hotel_prices", start, result)
+            return result
+
+        destination_name = _first_non_empty(destination.get("name"), city)
+        lines = [
+            "数据源：Booking.com via RapidAPI",
+            f"查询目的地：{destination_name}（dest_id={dest_id}, search_type={search_type}）",
+            f"入住/离店：{checkin_date} → {checkout_date}；成人 {max(1, int(adults))}；房间 {max(1, int(rooms))}",
+            "说明：价格为接口返回的实时参考总价，库存、税费和最终支付价以 Booking.com 页面为准。",
+            "酒店价格结果：",
+        ]
+        for index, entry in enumerate(hotels[:safe_limit], start=1):
+            prop = entry.get("property") or {}
+            price = ((prop.get("priceBreakdown") or {}).get("grossPrice") or {})
+            hotel_currency = _first_non_empty(price.get("currency"), currency, default=currency)
+            total_price = _format_money(price.get("value"), hotel_currency)
+            review = _first_non_empty(prop.get("reviewScore"), default="暂无评分")
+            review_count = _first_non_empty(prop.get("reviewCount"), default="暂无评论数")
+            review_word = _first_non_empty(prop.get("reviewScoreWord"), default="")
+            stars = _first_non_empty(prop.get("propertyClass"), default="未知星级")
+            location = ""
+            if prop.get("longitude") and prop.get("latitude"):
+                location = f"{prop.get('longitude')},{prop.get('latitude')}"
+            photos = prop.get("photoUrls") or []
+            photo_url = photos[0] if photos else ""
+            checkin = prop.get("checkin") or {}
+            checkout = prop.get("checkout") or {}
+            optional_parts = [
+                f"评分 {review}/10" if review != "暂无评分" else "",
+                f"评论 {review_count}" if review_count != "暂无评论数" else "",
+                f"口碑 {review_word}" if review_word else "",
+                f"星级 {stars}" if stars != "未知星级" else "",
+                f"坐标 {location}" if location else "",
+                f"入住 {checkin.get('fromTime', '')}-{checkin.get('untilTime', '')}".strip("-") if checkin else "",
+                f"离店 {checkout.get('untilTime', '')}" if checkout else "",
+                f"照片 {photo_url}" if photo_url else "",
+            ]
+            lines.append(
+                f"{index}. {prop.get('name', '未知酒店')}｜"
+                f"{prop.get('wishlistName') or prop.get('address') or destination_name}｜"
+                f"总价 {total_price}｜"
+                + "｜".join(part for part in optional_parts if part)
+            )
+        result = "\n".join(lines)
+        _log_tool_end("search_hotel_prices", start, result)
+        return result
+    except Exception as exc:
+        result = f"酒店价格查询异常：{exc}"
+        _log_tool_end("search_hotel_prices", start, result)
+        return result
+
+
+@tool
 def get_place_location(place: str, city: str = "") -> str:
     """使用高德地图解析地点经纬度和标准地址，用于路线规划和地点核验。"""
     start = _log_tool_start("get_place_location", place=place, city=city)
@@ -1496,6 +1706,7 @@ TRAVEL_TOOLS = [
     get_traffic_status,
     search_travel_pois,
     search_nearby_pois,
+    search_hotel_prices,
     get_place_location,
     get_map_marker_link,
 ]

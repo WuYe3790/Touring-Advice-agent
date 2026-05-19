@@ -1368,6 +1368,91 @@ textarea {
   font-style: italic;
 }
 
+/* Hotel Cards */
+.hotel-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 10px;
+}
+
+.hotel-card {
+  display: grid;
+  grid-template-columns: 96px 1fr;
+  min-height: 128px;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: #ffffff;
+  box-shadow: 0 10px 24px rgba(15, 23, 42, 0.04);
+}
+
+.hotel-photo {
+  width: 96px;
+  height: 100%;
+  min-height: 128px;
+  object-fit: cover;
+  background: #eff6ff;
+}
+
+.hotel-photo-empty {
+  display: grid;
+  place-items: center;
+  color: var(--accent-dark);
+  font-size: 14px;
+  font-weight: 800;
+}
+
+.hotel-body {
+  display: grid;
+  align-content: start;
+  gap: 7px;
+  padding: 12px;
+}
+
+.hotel-head {
+  display: grid;
+  gap: 4px;
+}
+
+.hotel-head h4 {
+  margin: 0;
+  color: var(--text);
+  font-size: 14px;
+  line-height: 1.35;
+}
+
+.hotel-head strong {
+  color: var(--accent-dark);
+  font-size: 16px;
+  font-variant-numeric: tabular-nums;
+}
+
+.hotel-area,
+.hotel-notes {
+  margin: 0;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.hotel-meta,
+.hotel-times {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+
+.hotel-meta span,
+.hotel-times span {
+  display: inline-flex;
+  padding: 2px 7px;
+  border-radius: 999px;
+  background: #f1f5f9;
+  color: #475467;
+  font-size: 11px;
+  line-height: 1.45;
+}
+
 /* Tips List */
 .tips-list {
   display: grid;

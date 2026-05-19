@@ -12,6 +12,7 @@ const amapStatus = document.querySelector("#amapStatus");
 const qweatherStatus = document.querySelector("#qweatherStatus");
 const trainStatus = document.querySelector("#trainStatus");
 const aviationStatus = document.querySelector("#aviationStatus");
+const hotelStatus = document.querySelector("#hotelStatus");
 const locationStatus = document.querySelector("#locationStatus");
 const conversationListEl = document.querySelector("#conversationList");
 const newChatBtn = document.querySelector("#newChatBtn");
@@ -1007,6 +1008,7 @@ const TRACE_TOOL_INFO = {
   get_air_quality_info: { label: "空气", title: "查询空气质量", desc: "判断户外活动、骑行和老人儿童出行风险。" },
   get_weather_alerts: { label: "预警", title: "查询天气预警", desc: "检查暴雨、大风、高温等灾害预警。" },
   calculate_trip_budget: { label: "预算", title: "计算预算", desc: "按人数、天数、住宿、餐饮和门票估算费用。" },
+  search_hotel_prices: { label: "酒店", title: "查询酒店价格", desc: "通过 Booking.com/RapidAPI 查询真实酒店价格参考。" },
   get_transport_advice: { label: "驾车", title: "规划驾车路线", desc: "查询驾车距离、耗时和过路费参考。" },
   search_flight_options: { label: "航班", title: "查询航班", desc: "查询航班时刻、机场、航站楼和状态。" },
   get_public_transit_plan: { label: "公交", title: "规划公交/地铁", desc: "查询市内公共交通换乘方案。" },
@@ -1228,6 +1230,7 @@ async function loadStatus() {
     }
     if (trainStatus) trainStatus.textContent = data.train_tools_available ? "可用" : "未检测到";
     if (aviationStatus) aviationStatus.textContent = data.aviationstack_key_loaded ? "已配置" : "未配置";
+    if (hotelStatus) hotelStatus.textContent = data.rapidapi_key_loaded ? "已配置" : "未配置";
   } catch {
     modelName.textContent = "读取失败";
     thinkingModelName.textContent = "读取失败";
@@ -1236,6 +1239,7 @@ async function loadStatus() {
     if (qweatherStatus) qweatherStatus.textContent = "未知";
     if (trainStatus) trainStatus.textContent = "未知";
     if (aviationStatus) aviationStatus.textContent = "未知";
+    if (hotelStatus) hotelStatus.textContent = "未知";
   }
 }
 
@@ -1699,6 +1703,9 @@ function buildStructuredCards(data) {
   if (data.transport_options && data.transport_options.length) {
     html += renderTransportCards(data.transport_options);
   }
+  if (data.hotel_options && data.hotel_options.length) {
+    html += renderHotelCards(data.hotel_options);
+  }
   if (data.budget && typeof data.budget.total === "number" && (data.budget.total > 0 || data.budget.notes || Object.keys(data.budget.breakdown || {}).length)) {
     html += renderBudgetCard(data.budget);
   }
@@ -1927,6 +1934,42 @@ function renderBudgetCard(budget) {
     </div>`;
 }
 
+function renderHotelCards(hotels) {
+  const cards = hotels.map((hotel) => {
+    const photo = hotel.photo_url || hotel.photo || "";
+    let price = String(hotel.price_total || hotel.price || hotel.cost || "价格待确认");
+    if (hotel.currency && /^\d+(?:\.\d+)?$/.test(price.trim())) {
+      price = `${hotel.currency} ${price}`;
+    }
+    const meta = [
+      hotel.rating ? `评分 ${hotel.rating}` : "",
+      hotel.review_count ? `${hotel.review_count} 条评论` : "",
+      hotel.stars ? `${hotel.stars} 星` : "",
+      hotel.currency && !String(price).includes(hotel.currency) ? hotel.currency : "",
+    ].filter(Boolean);
+    const times = [
+      hotel.checkin ? `入住 ${hotel.checkin}` : "",
+      hotel.checkout ? `离店 ${hotel.checkout}` : "",
+    ].filter(Boolean);
+    return `
+      <div class="hotel-card">
+        ${photo ? `<img class="hotel-photo" src="${escapeHtml(photo)}" alt="${escapeHtml(hotel.name || "酒店照片")}" loading="lazy" referrerpolicy="no-referrer">` : `<div class="hotel-photo hotel-photo-empty">酒店</div>`}
+        <div class="hotel-body">
+          <div class="hotel-head">
+            <h4>${escapeHtml(hotel.name || "酒店")}</h4>
+            <strong>${escapeHtml(String(price))}</strong>
+          </div>
+          ${hotel.area ? `<p class="hotel-area">${escapeHtml(hotel.area)}</p>` : ""}
+          ${meta.length ? `<div class="hotel-meta">${meta.map((item) => `<span>${escapeHtml(item)}</span>`).join("")}</div>` : ""}
+          ${times.length ? `<div class="hotel-times">${times.map((item) => `<span>${escapeHtml(item)}</span>`).join("")}</div>` : ""}
+          ${hotel.notes ? `<p class="hotel-notes">${escapeHtml(hotel.notes)}</p>` : ""}
+        </div>
+      </div>
+    `;
+  }).join("");
+  return `<div class="card-section"><h3 class="card-section-title">酒店价格参考</h3><div class="hotel-grid">${cards}</div></div>`;
+}
+
 function renderTipsList(tips) {
   const items = tips.map((t, i) => `
     <li class="tips-item">
@@ -1963,6 +2006,10 @@ function renderDataCredibility(data) {
   (data.poi_recommendations || []).forEach((category) => {
     if ((category.items || []).length) sources.set("高德地图", "POI 地点推荐");
   });
+  if ((data.hotel_options || []).length) {
+    sources.set("Booking.com/RapidAPI", "酒店价格");
+    limits.push("酒店价格为实时接口参考值，库存、税费和最终支付价以 Booking.com 确认页为准。");
+  }
   if (data.budget && typeof data.budget.total === "number") {
     sources.set("本地预算计算", "预算估算");
     if (data.budget.notes) limits.push("预算为估算值，真实价格以购票、酒店和商家平台为准。");
