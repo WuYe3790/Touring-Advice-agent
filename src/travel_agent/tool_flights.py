@@ -24,6 +24,7 @@ from travel_agent.tool_formatters import (
     _format_money,
     _log_tool_end,
     _log_tool_start,
+    _normalize_price_display,
     _poi_scalar,
     _summarize_letsfg_error,
 )
@@ -176,6 +177,7 @@ def _format_letsfg_offers(data: dict, dep_iata: str, arr_iata: str, limit: int) 
         price_text = _first_non_empty(offer.get("price_formatted"), default="")
         if not price_text:
             price_text = _format_money(offer.get("price"), _first_non_empty(offer.get("currency"), currency, default="CNY"))
+        price_text = _normalize_price_display(price_text)
         departure_time = _segment_time(first.get("departure"))
         arrival_time = _segment_time(last.get("arrival"))
         duration = _format_minutes(outbound.get("total_duration_seconds") or 0)

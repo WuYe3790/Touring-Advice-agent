@@ -138,13 +138,37 @@ def _first_non_empty(*values: object, default: str = "未知") -> str:
             return text
     return default
 
+_CURRENCY_SYMBOL: dict[str, str] = {
+    "CNY": "¥",
+    "USD": "$",
+    "EUR": "€",
+    "JPY": "¥",
+    "GBP": "£",
+    "HKD": "HK$",
+    "KRW": "₩",
+    "TWD": "NT$",
+    "RMB": "¥",
+}
+
+
 def _format_money(value: object, currency: str = "CNY") -> str:
     try:
         amount = float(value)
     except (TypeError, ValueError):
         return "价格未知"
     amount_text = str(round(amount)) if amount >= 100 else f"{amount:.2f}".rstrip("0").rstrip(".")
-    return f"{currency} {amount_text}"
+    symbol = _CURRENCY_SYMBOL.get(str(currency).upper(), str(currency).upper())
+    return f"{symbol}{amount_text}"
+
+
+def _normalize_price_display(text: str) -> str:
+    """将价格文本中的 ISO 货币代码替换为用户友好的符号。"""
+    import re
+
+    for code, symbol in _CURRENCY_SYMBOL.items():
+        text = re.sub(rf"\b{re.escape(code)}\s*", symbol, text, flags=re.IGNORECASE)
+    return text
+
 
 def _format_flight_time(value: object) -> str:
     text = _poi_scalar(value, "")
