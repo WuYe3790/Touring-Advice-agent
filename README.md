@@ -20,7 +20,7 @@
 - SSE 流式返回 Agent 执行过程
 - SQLite 历史会话持久化
 - Markdown 回答 + 结构化卡片双输出
-- 高德地图、和风天气、Aviationstack、12306-MCP、Booking.com/RapidAPI 等外部数据源接入
+- 高德地图、和风天气、LetsFG、Aviationstack、12306-MCP、Booking.com/RapidAPI 等外部数据源接入
 
 当前工具数量：
 
@@ -37,6 +37,7 @@
 - DeepSeek API
 - 高德地图 Web 服务 API
 - 和风天气 API
+- LetsFG 本地实时机票搜索
 - Aviationstack API
 - Booking.com / RapidAPI
 - 12306-MCP
@@ -114,6 +115,9 @@ AMAP_JS_SECURITY_CODE=你的高德 JS API 安全密钥
 QWEATHER_API_KEY=你的和风天气 API Key
 QWEATHER_API_HOST=你的和风天气专属 API Host
 AVIATIONSTACK_API_KEY=你的 Aviationstack API Key
+LETSFG_SEARCH_TIMEOUT=600
+LETSFG_SEARCH_MODE=fast
+LETSFG_MAX_BROWSERS=1
 RAPIDAPI_KEY=你的 RapidAPI Key
 RAPIDAPI_HOST=booking-com15.p.rapidapi.com
 ```
@@ -123,9 +127,11 @@ RAPIDAPI_HOST=booking-com15.p.rapidapi.com
 - `.env` 包含真实密钥，不要提交到公开仓库。
 - DeepSeek 控制台没有请求记录时，先检查前端是否开启了“离线演示”。
 - 和风天气空气质量和天气预警接口可能需要账号权限，接口不可用时工具会降级，不会中断 Agent。
-- Aviationstack 当前只用于航班时刻/状态查询，不提供真实机票价格。
+- LetsFG 当前用于优先查询实时机票报价，本地搜索可能较慢，因此默认设置 600 秒超时，失败后自动回退到 Aviationstack。
+- Aviationstack 当前只用于航班时刻/状态回退查询，不提供真实机票价格。
 - Booking.com/RapidAPI 当前用于酒店价格参考，价格和库存以 Booking.com 确认页为准。
 - 12306 工具需要本机 Node.js / npx，首次调用可能较慢。
+- LetsFG 本地搜索依赖 Playwright Chromium；首次安装依赖后可执行 `C:\Users\BaoXinJie\anaconda3\python.exe -m playwright install chromium`。
 
 ## 项目结构
 
@@ -267,7 +273,7 @@ Agent 的最终回答末尾会输出 JSON，后端提取为 `structured_data`，
 | `get_weather_alerts` | 和风 | 天气预警，权限不足时降级 |
 | `calculate_trip_budget` | 本地计算 | 预算估算 |
 | `get_transport_advice` | 高德 | 驾车路线、距离、耗时、过路费 |
-| `search_flight_options` | Aviationstack | 航班时刻/状态，不含票价 |
+| `search_flight_options` | LetsFG > Aviationstack | 优先实时机票报价；超时或失败时回退航班时刻/状态 |
 | `get_public_transit_plan` | 高德 | 公交/地铁换乘 |
 | `get_walking_route` | 高德 | 步行路线 |
 | `get_bicycling_route` | 高德 | 骑行路线 |
@@ -343,7 +349,7 @@ Get-CimInstance Win32_Process |
 
 - Flask 当前是开发服务器，只适合本地演示。
 - DeepSeek API-level thinking 暂未开启，深度思考模式依赖 Pro 模型和提示词。
-- 航班工具不提供真实票价。
+- 航班工具优先使用 LetsFG 本地实时搜索返回机票报价；若 LetsFG 超时、无结果或本机浏览器搜索失败，则回退到 Aviationstack 航班时刻/状态，此时不含真实票价。
 - 酒店价格已接入 Booking.com/RapidAPI，但价格、库存、税费和最终支付价仍以 Booking.com 确认页为准。
 - 和风空气质量/天气预警依赖账号权限，403 时会降级。
 - 高德静态地图是图片，不是真正交互式地图；当前支持拖动图片视角，但不能缩放或加载新瓦片。
@@ -384,6 +390,16 @@ Get-CimInstance Win32_Process |
 - 执行报告支持展示 `search_hotel_prices` 工具调用。
 - 酒店价格数据可信度说明已加入前端卡片：价格为 Booking.com/RapidAPI 实时参考，最终以确认页为准。
 
+## 今日工作记录（2026-05-20）
+
+- 检查 `LetsFG/LetsFG` 开源项目，确认其本地航班搜索可免费运行且不需要 API Key；地点解析、解锁和预订能力需要 LetsFG 账号/API Key。
+- 安装 `letsfg` 和 Playwright Chromium 到当前 Anaconda Python 环境。
+- 将 `search_flight_options` 升级为“两级策略”：优先调用 LetsFG 本地实时机票搜索，返回航司、航班号、起降时间、经停、价格和预订链接；失败或超时后自动回退 Aviationstack。
+- 保留 Aviationstack 作为兜底，避免 LetsFG 搜索较慢时导致简单航班查询长时间无响应。
+- 新增 `LETSFG_SEARCH_TIMEOUT`、`LETSFG_SEARCH_MODE`、`LETSFG_MAX_BROWSERS` 配置项。
+- 更新 Agent 提示词：用户只询问航班/机票时，优先只回答航班和票价相关内容，不扩展成完整旅行规划。
+- 清理 LetsFG 测试产生的本地浏览器缓存目录，避免无关文件进入项目。
+
 ## 后续优化路线
 
 ### 当前 Phase 可继续优化
@@ -402,8 +418,8 @@ Get-CimInstance Win32_Process |
    - 后续可结合路线顺序，增加“离当天路线近”的推荐。
 
 3. **行程与地图联动**
-   - 已支持根据 POI 坐标匹配每日行程地点，并为 Day1 / Day2 等生成当天地点关系小地图。
-   - 后续可把每日行程地图升级为真正路线 polyline，而不是地点关系图。
+   - 当前按保守方案展示每日行程相关地点小地图，不再强行绘制可能误导用户的地点连线。
+   - 后续可在地点抽取、分类和顺序稳定后，再考虑恢复真正路线 polyline。
    - 交通方案卡片点击后展示该路线涉及的起终点。
 
 4. **单点查询体验继续收敛**
@@ -413,19 +429,19 @@ Get-CimInstance Win32_Process |
 
 5. **数据可信度展示**
    - 已新增数据可信度卡片，汇总天气、交通、POI、预算等数据源。
-   - 已对“航班不含票价”“预算为估算值”“预警接口可能受权限影响”等限制做统一说明。
+   - 已对“LetsFG 可能超时并回退 Aviationstack”“预算为估算值”“预警接口可能受权限影响”等限制做统一说明。
    - 后续可在导出报告里进一步区分真实数据、估算数据、模型推断。
 
 ### Phase 4：真正的地图交互系统
 
 目标是把当前“可拖拽静态地图”升级为真正地图应用。当前已接入高德 JS API，保留静态地图作为兜底。
 
-已完成：
+已完成过：
 
 - 新增 `AMAP_JS_API_KEY` 和 `AMAP_JS_SECURITY_CODE` 配置项。
 - 后端新增 `/api/amap/js-config`，前端按需加载高德 JS API。
 - POI 推荐地图优先渲染为真实高德地图，加载失败时回退到静态地图。
-- 每日行程小地图优先渲染为真实高德地图，并用折线展示当天地点关系。
+- 每日行程小地图曾尝试用折线展示当天地点关系；由于地点抽取和顺序稳定性不足，当前已回退为只展示当日相关地点。
 - 点击 marker 可查看地点名称、类型和地址。
 - marker hover / click 会高亮对应 POI 卡片。
 - POI 卡片 hover 会反向高亮对应 marker。
@@ -474,4 +490,4 @@ Get-CimInstance Win32_Process |
 
 可以概括为：
 
-> 基于 LangChain 和 DeepSeek 的智能旅行规划 Agent，支持多轮对话、SSE 流式执行过程可视化、SQLite 历史持久化和 18 个外部工具调用。系统接入高德地图、和风天气、Aviationstack 与 12306-MCP，具备天气、预警、空气质量、驾车、公交、步行、骑行、实时路况、航班、火车票、POI 搜索、周边搜索、地点解析和静态地图展示能力。前端将模型输出的结构化 JSON 渲染为天气、交通、预算、行程、POI 和地图卡片，并支持地点联想、默认出发地识别、Agent 执行报告导出等交互。
+> 基于 LangChain 和 DeepSeek 的智能旅行规划 Agent，支持多轮对话、SSE 流式执行过程可视化、SQLite 历史持久化和 18 个外部工具调用。系统接入高德地图、和风天气、LetsFG、Aviationstack 与 12306-MCP，具备天气、预警、空气质量、驾车、公交、步行、骑行、实时路况、实时机票报价、航班时刻回退、火车票、POI 搜索、周边搜索、地点解析和地图展示能力。前端将模型输出的结构化 JSON 渲染为天气、交通、预算、行程、POI 和地图卡片，并支持地点联想、默认出发地识别、Agent 执行报告导出等交互。

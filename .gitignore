@@ -1,6 +1,7 @@
 .env
 .claude/
 .cache/
+.edreams_chrome_data/
 __pycache__/
 *.py[cod]
 .pytest_cache/

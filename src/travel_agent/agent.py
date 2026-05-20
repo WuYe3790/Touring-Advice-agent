@@ -98,7 +98,7 @@ REAL_DATA_TOOL_PROMPT = """
 15. search_train_tickets 可用 12306 查询真实火车票余票（高铁/动车/普速），支持按车型筛选和数量限制。
 16. search_interline_train_tickets 可用 12306 查询中转余票方案，适合直达车次少、不合适或用户明确接受中转时调用。
 17. get_train_route 可用 12306 查询特定车次的经停站和时刻表。
-18. search_flight_options 可用 Aviationstack 查询航班时刻/状态，适合远距离跨城出行的飞机备选；注意它不提供机票价格。
+18. search_flight_options 会优先尝试 LetsFG 本地实时机票搜索，返回真实机票报价；如果 LetsFG 超时或失败，会自动回退到 Aviationstack 查询航班时刻/状态。Aviationstack 不提供机票价格。
 
 使用要求：
 - 当用户只是要求查某一种信息时，严格选择对应工具并窄回答：查航班只调用 search_flight_options；查高铁/火车只调用 search_train_tickets 或 search_interline_train_tickets；查天气只调用天气工具；查市内换乘只调用 get_public_transit_plan/步行/骑行等路线工具；查地点或周边只调用地点/POI 工具。不要因为识别出了城市就自动查询天气、景点、预算或完整日程。
@@ -118,7 +118,7 @@ REAL_DATA_TOOL_PROMPT = """
 - 关键规则：get_transport_advice 只返回驾车路线数据，不含火车信息。当行程涉及跨城时，必须在调用 get_transport_advice 之后额外调用 search_train_tickets 查询真实火车票。即使 get_transport_advice 结果中出现了"高铁"文字，那只是通用建议而非真实车次数据，不能替代 search_train_tickets。
 - 用户提到"高铁"时传 train_filter_flags="G"，提到"动车"时传"D"。将 search_train_tickets 返回的车次号、出发/到达时刻、座型余票、票价如实地写入 transport_options（每条一个方案：mode 为"高铁 G车次号"，duration 为历时，cost_estimate 为座型+票价）和 daily_itinerary 的交通步骤中。
 - 若 search_train_tickets 没有查到合适直达车，或用户提到"中转/换乘/怎么转车"，应调用 search_interline_train_tickets；不得自行编造中转车次。中转方案写入 transport_options 时 category 使用 "interline_train"，总方案写在外层，每一段车次写入 legs，并尽量包含换乘站、换乘等待时间、总耗时、各段票价/余票。
-- 当用户明确提到"飞机/航班/机场/机票"时，应调用 search_flight_options。跨城距离较远（例如驾车超过约500公里、火车耗时较长、或目的地适合航空出行）时，也应把 search_flight_options 作为备选工具调用。航班工具参数优先传机场 IATA 三字码；若不确定，可传常见城市名，工具内置部分中国城市机场映射。若航班工具提示"不支持按指定日期查询，已自动回退"，最终回答必须说明这是近期/实时航班参考，不要声称它完整覆盖用户指定日期。最终回答必须说明 Aviationstack 不提供票价，航班方案只作为时刻/状态参考。
+- 当用户明确提到"飞机/航班/机场/机票/机票价格"时，应调用 search_flight_options。跨城距离较远（例如驾车超过约500公里、火车耗时较长、或目的地适合航空出行）时，也应把 search_flight_options 作为备选工具调用。航班工具参数优先传机场 IATA 三字码；若不确定，可传常见城市名，工具内置部分中国城市机场映射；若用户给出人数，把成人数传入 adults。若工具返回 LetsFG 结果，最终回答应展示票价、航司、出发/到达时间和数据限制；若工具返回 Aviationstack 回退结果，必须说明这是航班时刻/状态参考，不含真实票价。
 - 最终回答应说明关键数据来源，例如"天气和空气质量来自和风天气""地点和路线来自高德地图""酒店价格来自 Booking.com/RapidAPI""火车票来自12306""航班来自 Aviationstack"。
 """
 
