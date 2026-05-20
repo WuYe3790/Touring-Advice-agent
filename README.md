@@ -180,6 +180,9 @@ RAPIDAPI_HOST=booking-com15.p.rapidapi.com
         ├── tool_flights.py        # LetsFG 本地搜索、机场三字码解析、航班报价格式化
         ├── tool_formatters.py     # 工具输出格式化、耗时/距离/航班/日志文案
         ├── tool_hotels.py         # Booking.com/RapidAPI 目的地解析和酒店查询辅助
+        ├── tool_maps.py           # 高德地点解析、坐标归一化、地图链接基础能力
+        ├── tool_transport.py      # 驾车、公交/地铁、步行、骑行、距离矩阵、实时路况
+        ├── tool_weather.py        # 天气、空气质量、天气预警、生活指数工具
         ├── trace.py               # 执行报告、工具状态、trace 清洗
         ├── tools.py               # 核心工具
         └── train_tools.py         # 12306-MCP 客户端和火车票工具
@@ -196,7 +199,10 @@ RAPIDAPI_HOST=booking-com15.p.rapidapi.com
 - `travel_agent.tool_flights` 独立承接 LetsFG 本地搜索、机场三字码归一化和实时机票报价格式化。
 - `travel_agent.tool_formatters` 独立保存距离、时间、航班、POI、日志等格式化逻辑，后续改展示文案时不需要动 API 调用代码。
 - `travel_agent.tool_hotels` 独立承接 Booking.com/RapidAPI 的城市目的地解析和酒店查询辅助逻辑。
-- `travel_agent.tools` 仍保留为统一工具入口，避免大规模改动 LangChain 工具注册；后续若继续拆工具，应先按天气、地图、交通、航班、酒店分组，并保留兼容导入。
+- `travel_agent.tool_maps` 独立承接高德地点解析、坐标归一化、路线起终点解析和地图 URI 生成等基础地图能力。
+- `travel_agent.tool_transport` 独立承接高德驾车、公交/地铁、步行、骑行、距离矩阵、实时路况等交通工具。
+- `travel_agent.tool_weather` 独立承接天气、空气质量、灾害预警、生活指数四个天气相关工具。
+- `travel_agent.tools` 仍保留为统一工具注册入口，避免影响 LangChain Agent 的工具列表；后续新增/删除工具时优先改对应领域模块，再在这里导入并加入 `TRAVEL_TOOLS`。
 
 ## Agent 架构
 
@@ -448,7 +454,46 @@ Get-CimInstance Win32_Process |
 - 新增 `travel_agent.tool_data`，把天气代码、机场三字码、酒店城市别名从核心工具逻辑中拆出，降低 `tools.py` 的维护压力。
 - 新增 `travel_agent.tool_formatters`，把距离/时间/POI/航班/工具日志等格式化逻辑从业务工具中拆出。
 - 新增 `travel_agent.tool_flights` 和 `travel_agent.tool_hotels`，分别承接 LetsFG/航班辅助逻辑与 Booking.com/RapidAPI 酒店辅助逻辑。
+- 新增 `travel_agent.tool_maps`，把高德地点解析、坐标归一化、路线点解析、地图链接生成等地图基础能力从工具入口中拆出。
+- 新增 `travel_agent.tool_weather`，把天气、空气质量、天气预警、生活指数四个天气工具从 `tools.py` 中拆出。
+- 新增 `travel_agent.tool_transport`，把驾车、公交/地铁、步行、骑行、距离矩阵、实时路况六个交通工具从 `tools.py` 中拆出。
 - 清理前端 `static/app.js` 中被后续实现覆盖的重复函数定义，避免维护时误改旧版 `renderTrace`、`requestChatStream`、`appendMeta`、`setBusy` 等无效逻辑。
+
+## 接手指南
+
+当前代码已经拆成“入口 + 领域模块”的结构，项目启动方式没有变化：
+
+```powershell
+C:\Users\BaoXinJie\anaconda3\python.exe app.py
+```
+
+接手时建议先看这些文件：
+
+- `server/chat_routes.py`：Web 聊天和 SSE 流式接口。
+- `src/travel_agent/agent.py`：Agent 构建、普通/深度思考模式、流式事件组装。
+- `src/travel_agent/prompts.py`：系统提示词、单点查询约束、结构化 JSON 输出协议。
+- `src/travel_agent/tools.py`：LangChain 工具统一注册入口，`TRAVEL_TOOLS` 在这里组装。
+- `src/travel_agent/tool_weather.py`：天气、空气质量、天气预警、生活指数。
+- `src/travel_agent/tool_transport.py`：驾车、公交/地铁、步行、骑行、距离矩阵、实时路况。
+- `src/travel_agent/tool_flights.py`：LetsFG 本地搜索和航班辅助逻辑。
+- `src/travel_agent/tool_hotels.py`：Booking.com/RapidAPI 酒店辅助逻辑。
+- `src/travel_agent/tool_maps.py`：高德地点解析和坐标基础能力。
+- `src/travel_agent/structured.py`：后端提取结构化 JSON 和卡片兜底数据。
+- `static/app.js`：前端聊天、SSE、卡片和地图渲染。
+
+继续拆分建议：
+
+- 优先拆 `tools.py` 中剩余的 POI/地点展示工具：`search_travel_pois`、`search_nearby_pois`、`get_place_location`、`get_map_marker_link` 可迁入 `tool_pois.py`。
+- 酒店主工具 `search_hotel_prices` 也可以迁入 `tool_hotels.py`，但要确认前端酒店卡片和执行报告仍能正常解析工具名。
+- 航班主工具 `search_flight_options` 可迁入 `tool_flights.py`，但要保留 `tools.py` 中对它的导入和 `TRAVEL_TOOLS` 注册。
+- 每拆一组后建议执行：
+
+```powershell
+C:\Users\BaoXinJie\anaconda3\python.exe -m compileall app.py run.py web.py server src
+node --check static\app.js
+```
+
+并用 Flask test client 或浏览器至少验证 `/api/status`、`/api/chat` 离线演示和一次真实工具调用。
 
 ## 后续优化路线
 
