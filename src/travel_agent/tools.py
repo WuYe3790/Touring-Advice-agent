@@ -1,164 +1,52 @@
 from __future__ import annotations
 
-import json
-import time
 import os
 import re
-import subprocess
-import sys
-import unicodedata
 from datetime import datetime, timedelta
 
-import jwt
 import requests
-from dotenv import load_dotenv
 from langchain_core.tools import tool
-from travel_agent.tool_data import AIRPORT_IATA_BY_CITY, HOTEL_CITY_ALIASES, WEATHER_CODES
+from travel_agent.tool_formatters import (
+    _first_non_empty,
+    _format_aviationstack_flights,
+    _format_distance_matrix_type,
+    _format_km,
+    _format_minutes,
+    _format_money,
+    _format_poi_lines,
+    _format_route_steps,
+    _format_transit_cost,
+    _format_transit_segment,
+    _log_tool_end,
+    _log_tool_start,
+    _poi_scalar,
+    _traffic_status_label,
+    _transit_mode_label,
+)
+from travel_agent.tool_clients import (
+    AMAP_BASE_URL,
+    AVIATIONSTACK_BASE_URL,
+    _amap_key,
+    _aviationstack_key,
+    _qweather_host,
+    _qweather_key,
+    _qweather_lookup,
+    _qweather_request_json,
+    _rapidapi_headers,
+    _rapidapi_host,
+    _rapidapi_key,
+    _request_json,
+)
+from travel_agent.tool_data import WEATHER_CODES
+from travel_agent.tool_flights import (
+    _normalize_airport_iata,
+    _search_letsfg_local,
+)
+from travel_agent.tool_hotels import _booking_destination_id, _booking_search_destinations
 
 
 DEFAULT_DATE = (datetime.now() + timedelta(days=1)).strftime("%Y-%m-%d")
-
-AMAP_BASE_URL = "https://restapi.amap.com/v3"
-# Aviationstack free-tier keys commonly reject HTTPS with HTTP 403.
-AVIATIONSTACK_BASE_URL = "http://api.aviationstack.com/v1"
-RAPIDAPI_BOOKING_HOST = "booking-com15.p.rapidapi.com"
-_QWEATHER_JWT_CACHE: dict[str, object] = {"token": "", "exp": 0}
 COORDINATE_RE = re.compile(r"^\s*(-?\d+(?:\.\d+)?)\s*,\s*(-?\d+(?:\.\d+)?)\s*$")
-
-
-def _get_env_key(name: str) -> str:
-    load_dotenv()
-    return os.getenv(name, "").strip()
-
-
-def _request_json(url: str, params: dict[str, object], timeout: int = 10, headers: dict[str, str] | None = None) -> dict:
-    response = requests.get(url, params=params, headers=headers, timeout=timeout)
-    response.raise_for_status()
-    return response.json()
-
-
-def _amap_key() -> str:
-    return _get_env_key("AMAP_API_KEY")
-
-
-def _aviationstack_key() -> str:
-    return _get_env_key("AVIATIONSTACK_API_KEY")
-
-
-def _rapidapi_key() -> str:
-    return _get_env_key("RAPIDAPI_KEY")
-
-
-def _rapidapi_host() -> str:
-    return _get_env_key("RAPIDAPI_HOST") or RAPIDAPI_BOOKING_HOST
-
-
-def _rapidapi_headers() -> dict[str, str]:
-    host = _rapidapi_host()
-    return {"X-RapidAPI-Key": _rapidapi_key(), "X-RapidAPI-Host": host}
-
-
-def _qweather_key() -> str:
-    return _get_env_key("QWEATHER_API_KEY")
-
-
-def _qweather_host() -> str:
-    return _get_env_key("QWEATHER_API_HOST").removeprefix("https://").removeprefix("http://").strip("/")
-
-
-def _qweather_jwt_key_id() -> str:
-    return _get_env_key("QWEATHER_JWT_KEY_ID")
-
-
-def _qweather_jwt_project_id() -> str:
-    return _get_env_key("QWEATHER_JWT_PROJECT_ID")
-
-
-def _qweather_jwt_private_key() -> str:
-    private_key = _get_env_key("QWEATHER_JWT_PRIVATE_KEY")
-    if private_key:
-        return private_key.replace("\\n", "\n")
-    private_key_path = _get_env_key("QWEATHER_JWT_PRIVATE_KEY_PATH")
-    if private_key_path and os.path.exists(private_key_path):
-        with open(private_key_path, "r", encoding="utf-8") as file:
-            return file.read()
-    return ""
-
-
-def _qweather_jwt_token() -> str:
-    key_id = _qweather_jwt_key_id()
-    project_id = _qweather_jwt_project_id()
-    private_key = _qweather_jwt_private_key()
-    if not key_id or not project_id or not private_key:
-        return ""
-
-    now = int(time.time())
-    cached_token = str(_QWEATHER_JWT_CACHE.get("token") or "")
-    cached_exp = int(_QWEATHER_JWT_CACHE.get("exp") or 0)
-    if cached_token and cached_exp - now > 60:
-        return cached_token
-
-    iat = now - 30
-    exp = iat + 900
-    token = jwt.encode(
-        {"sub": project_id, "iat": iat, "exp": exp},
-        private_key,
-        algorithm="EdDSA",
-        headers={"alg": "EdDSA", "kid": key_id, "typ": "JWT"},
-    )
-    _QWEATHER_JWT_CACHE.update({"token": token, "exp": exp})
-    return token
-
-
-def _qweather_header_candidates() -> list[tuple[str, dict[str, str]]]:
-    candidates: list[tuple[str, dict[str, str]]] = []
-    try:
-        token = _qweather_jwt_token()
-        if token:
-            candidates.append(("和风天气 JWT", {"Authorization": f"Bearer {token}"}))
-    except Exception as exc:
-        print(f"和风天气 JWT 生成失败，将尝试 API Key：{exc}")
-    api_key = _qweather_key()
-    if api_key:
-        candidates.append(("和风天气 API Key", {"X-QW-Api-Key": api_key}))
-    return candidates
-
-
-def _qweather_headers() -> dict[str, str]:
-    candidates = _qweather_header_candidates()
-    return candidates[0][1] if candidates else {}
-
-
-def _qweather_request_json(url: str, params: dict[str, object] | None = None, timeout: int = 10) -> tuple[dict, str]:
-    candidates = _qweather_header_candidates()
-    if not candidates:
-        raise RuntimeError("未配置和风天气 JWT 或 API Key。")
-
-    last_exc: Exception | None = None
-    for source, headers in candidates:
-        try:
-            return _request_json(url, params or {}, timeout=timeout, headers=headers), source
-        except requests.HTTPError as exc:
-            last_exc = exc
-            status_code = exc.response.status_code if exc.response is not None else None
-            if status_code in {401, 403}:
-                continue
-            raise
-    if last_exc:
-        raise last_exc
-    raise RuntimeError("和风天气认证失败。")
-
-
-def _qweather_lookup(city: str) -> dict | None:
-    qweather_host = _qweather_host()
-    if not qweather_host or not _qweather_header_candidates():
-        return None
-    geo_data, _ = _qweather_request_json(
-        f"https://{qweather_host}/geo/v2/city/lookup",
-        {"location": city, "lang": "zh"},
-    )
-    locations = geo_data.get("location") or []
-    return locations[0] if locations else None
 
 
 def _amap_geocode(address: str, city: str = "") -> dict | None:
@@ -244,56 +132,6 @@ def _resolve_route_points(origin: str, destination: str, city: str = "") -> tupl
     return origin_location, origin_address, destination_location, destination_address
 
 
-def _format_minutes(seconds: int | float | str) -> str:
-    try:
-        minutes = max(1, round(float(seconds) / 60))
-    except (TypeError, ValueError):
-        return "未知"
-    if minutes >= 60:
-        hours = minutes // 60
-        rest = minutes % 60
-        return f"{hours}小时{rest}分钟" if rest else f"{hours}小时"
-    return f"{minutes}分钟"
-
-
-def _format_km(meters: int | float | str) -> str:
-    try:
-        km = float(meters) / 1000
-    except (TypeError, ValueError):
-        return "未知"
-    return f"{km:.1f}公里"
-
-
-def _format_route_steps(steps: list[dict], limit: int = 6) -> str:
-    items = []
-    for step in steps[:limit]:
-        instruction = _first_non_empty(step.get("instruction"), step.get("road"), default="")
-        distance = step.get("distance")
-        if instruction:
-            items.append(f"{instruction}（{_format_km(distance)}）" if distance else instruction)
-    return "；".join(items) if items else "未返回详细步骤"
-
-
-def _format_distance_matrix_type(travel_type: str) -> tuple[str, int]:
-    normalized = str(travel_type or "driving").strip().lower()
-    if normalized in {"walking", "walk", "步行"}:
-        return "步行", 3
-    if normalized in {"straight", "linear", "distance", "直线"}:
-        return "直线距离", 0
-    return "驾车", 1
-
-
-def _traffic_status_label(value: object) -> str:
-    text = _poi_scalar(value, "未知")
-    return {
-        "0": "未知",
-        "1": "畅通",
-        "2": "缓行",
-        "3": "拥堵",
-        "4": "严重拥堵",
-    }.get(text, text)
-
-
 def _city_name_from_geocode(info: dict | None, fallback: str) -> str:
     if not info:
         return fallback
@@ -304,21 +142,6 @@ def _city_name_from_geocode(info: dict | None, fallback: str) -> str:
     if isinstance(province, list):
         province = province[0] if province else ""
     return str(city or province or fallback)
-
-
-def _poi_scalar(value: object, default: str = "") -> str:
-    if value is None or value == [] or value == {}:
-        return default
-    if isinstance(value, list):
-        return str(value[0]) if value else default
-    return str(value)
-
-
-def _format_transit_cost(cost: object) -> str:
-    value = _poi_scalar(cost, "")
-    if not value:
-        return "未知"
-    return value if value.endswith("元") else f"{value}元"
 
 
 def _geocode_many(places: str, city: str = "") -> list[tuple[str, str, str]]:
@@ -333,403 +156,8 @@ def _geocode_many(places: str, city: str = "") -> list[tuple[str, str, str]]:
     return results
 
 
-def _format_transit_segment(segment: dict) -> str:
-    bus_info = segment.get("bus") or {}
-    buslines = bus_info.get("buslines") or []
-    if buslines:
-        line = buslines[0]
-        name = _poi_scalar(line.get("name"), "未知线路")
-        departure = _poi_scalar(line.get("departure_stop", {}).get("name"), "未知上车站")
-        arrival = _poi_scalar(line.get("arrival_stop", {}).get("name"), "未知下车站")
-        stops = _poi_scalar(line.get("via_num"), "未知")
-        return f"{name}：{departure} → {arrival}，约{stops}站"
-
-    walking = segment.get("walking") or {}
-    distance = walking.get("distance")
-    if distance:
-        return f"步行约{_format_km(distance)}"
-    return "换乘步骤信息不完整"
-
-
-def _transit_mode_label(transit: dict) -> str:
-    names: list[str] = []
-    for segment in transit.get("segments") or []:
-        if not isinstance(segment, dict):
-            continue
-        buslines = (segment.get("bus") or {}).get("buslines") or []
-        for line in buslines:
-            name = _poi_scalar(line.get("name"), "")
-            if name:
-                names.append(name)
-    has_rail = any("地铁" in name or "轨道交通" in name for name in names)
-    has_bus = any("路" in name and "地铁" not in name and "轨道交通" not in name for name in names)
-    if has_rail and has_bus:
-        return "地铁+公交换乘"
-    if has_rail:
-        return "地铁优先"
-    if has_bus:
-        return "公交备选"
-    return "公共交通"
-
-
-def _format_poi_lines(title: str, pois: list[dict], limit: int) -> str:
-    lines = ["数据源：高德地图", title]
-    for index, poi in enumerate(pois[: max(1, min(int(limit), 20))], start=1):
-        name = poi.get("name", "未知地点")
-        poi_type = poi.get("type", "未知类型")
-        address = poi.get("address") or "地址未提供"
-        location = poi.get("location") or "坐标未知"
-        tel = poi.get("tel") or "电话未提供"
-        distance = poi.get("distance")
-        biz_ext = poi.get("biz_ext") or {}
-        rating = _poi_scalar(biz_ext.get("rating"), "暂无评分")
-        cost = _poi_scalar(biz_ext.get("cost"), "暂无人均")
-        opentime = _poi_scalar(biz_ext.get("opentime"), "营业时间未提供")
-        photos = poi.get("photos") or []
-        photo_url = ""
-        if photos and isinstance(photos[0], dict):
-            photo_url = photos[0].get("url") or ""
-
-        optional_parts = [
-            f"距离 {_format_km(distance)}" if distance else "",
-            f"评分 {rating}" if rating != "暂无评分" else "",
-            f"人均 {cost}元" if cost != "暂无人均" else "",
-            f"营业时间 {opentime}" if opentime != "营业时间未提供" else "",
-            f"照片 {photo_url}" if photo_url else "",
-        ]
-        optional_text = "；".join(part for part in optional_parts if part)
-        lines.append(
-            f"{index}. {name}；{poi_type}；{address}；坐标 {location}；电话 {tel}"
-            + (f"；{optional_text}" if optional_text else "")
-        )
-    return "\n".join(lines)
-
-
 def _amap_marker_url(location: str, name: str) -> str:
     return f"https://uri.amap.com/marker?position={location}&name={requests.utils.quote(name)}"
-
-
-def _first_non_empty(*values: object, default: str = "未知") -> str:
-    for value in values:
-        text = _poi_scalar(value, "").strip()
-        if text:
-            return text
-    return default
-
-
-def _normalize_airport_iata(value: str) -> str:
-    text = str(value or "").strip().upper()
-    if re.fullmatch(r"[A-Z]{3}", text):
-        return text
-    cleaned = str(value or "").strip()
-    for suffix in ("市", "机场", "国际机场", "机场T1", "机场T2", "机场T3"):
-        cleaned = cleaned.replace(suffix, "")
-    return AIRPORT_IATA_BY_CITY.get(cleaned, text)
-
-
-def _hotel_city_queries(city: str) -> list[str]:
-    raw = str(city or "").strip()
-    if not raw:
-        return []
-    normalized = raw.removesuffix("市")
-    alias = HOTEL_CITY_ALIASES.get(normalized) or HOTEL_CITY_ALIASES.get(raw)
-    return list(dict.fromkeys(query for query in (raw, normalized, alias or "") if query))
-
-
-def _booking_search_destinations(city: str) -> list[dict]:
-    if not _rapidapi_key():
-        return []
-    host = _rapidapi_host()
-    for query in _hotel_city_queries(city):
-        data = _request_json(
-            f"https://{host}/api/v1/hotels/searchDestination",
-            {"query": query},
-            timeout=20,
-            headers=_rapidapi_headers(),
-        )
-        items = data.get("data") if isinstance(data.get("data"), list) else []
-        if items:
-            return items
-    return []
-
-
-def _booking_destination_id(destination: dict) -> tuple[str, str]:
-    dest_id = destination.get("dest_id") or destination.get("city_ufi") or destination.get("id")
-    dest_type = str(destination.get("dest_type") or "city").upper()
-    if dest_type == "HOTEL":
-        search_type = "HOTEL"
-    elif dest_type in {"LANDMARK", "DISTRICT", "REGION", "AIRPORT"}:
-        search_type = dest_type
-    else:
-        search_type = "CITY"
-    return str(dest_id or ""), search_type
-
-
-def _format_money(value: object, currency: str = "CNY") -> str:
-    try:
-        amount = float(value)
-    except (TypeError, ValueError):
-        return "价格未知"
-    amount_text = str(round(amount)) if amount >= 100 else f"{amount:.2f}".rstrip("0").rstrip(".")
-    return f"{currency} {amount_text}"
-
-
-def _format_flight_time(value: object) -> str:
-    text = _poi_scalar(value, "")
-    if not text:
-        return "未知"
-    return text.replace("T", " ").split("+")[0]
-
-
-def _format_aviationstack_flights(
-    flights: list[dict],
-    dep_iata: str,
-    arr_iata: str,
-    limit: int,
-    note: str = "",
-) -> str:
-    lines = [
-        "数据源：Aviationstack",
-        "说明：该接口提供航班时刻/状态信息，不提供机票价格；票价需到航司或 OTA 平台另查。",
-        f"查询机场：{dep_iata or '不限'} → {arr_iata or '不限'}",
-    ]
-    if note:
-        lines.append(note)
-    for index, flight in enumerate(flights[: max(1, min(int(limit), 20))], start=1):
-        dep = flight.get("departure") or {}
-        arr = flight.get("arrival") or {}
-        airline_info = flight.get("airline") or {}
-        flight_info = flight.get("flight") or {}
-        flight_code = _first_non_empty(flight_info.get("iata"), flight_info.get("icao"), flight_info.get("number"))
-        airline_name = _first_non_empty(airline_info.get("name"), airline_info.get("iata"), default="未知航空公司")
-        dep_airport = _first_non_empty(dep.get("airport"), dep.get("iata"), default="未知出发机场")
-        arr_airport = _first_non_empty(arr.get("airport"), arr.get("iata"), default="未知到达机场")
-        dep_time = _format_flight_time(dep.get("scheduled") or dep.get("estimated") or dep.get("actual"))
-        arr_time = _format_flight_time(arr.get("scheduled") or arr.get("estimated") or arr.get("actual"))
-        status = _first_non_empty(flight.get("flight_status"), default="未知状态")
-        terminal_gate = []
-        if dep.get("terminal"):
-            terminal_gate.append(f"出发航站楼 {dep.get('terminal')}")
-        if dep.get("gate"):
-            terminal_gate.append(f"登机口 {dep.get('gate')}")
-        if arr.get("terminal"):
-            terminal_gate.append(f"到达航站楼 {arr.get('terminal')}")
-        lines.append(
-            f"{index}. {airline_name} {flight_code}；"
-            f"{dep_airport}({dep.get('iata', '未知')}) → {arr_airport}({arr.get('iata', '未知')})；"
-            f"计划 {dep_time} → {arr_time}；状态 {status}"
-            + (f"；{'，'.join(terminal_gate)}" if terminal_gate else "")
-        )
-    return "\n".join(lines)
-
-
-def _letsfg_search_timeout() -> int:
-    try:
-        return max(5, min(int(_get_env_key("LETSFG_SEARCH_TIMEOUT") or 600), 600))
-    except ValueError:
-        return 600
-
-
-def _letsfg_search_mode() -> str:
-    return (_get_env_key("LETSFG_SEARCH_MODE") or "fast").strip() or "fast"
-
-
-def _letsfg_max_browsers() -> int:
-    try:
-        return max(1, min(int(_get_env_key("LETSFG_MAX_BROWSERS") or 3), 6))
-    except ValueError:
-        return 3
-
-
-def _letsfg_max_stopovers() -> int:
-    try:
-        return max(0, min(int(_get_env_key("LETSFG_MAX_STOPOVERS") or 0), 2))
-    except ValueError:
-        return 0
-
-
-def _safe_text(value: object, limit: int | None = None) -> str:
-    text = str(value or "")
-    text = text.replace("\ufffd", "")
-    text = "".join(ch for ch in text if ch in "\n\r\t" or unicodedata.category(ch)[0] != "C")
-    if limit is not None and len(text) > limit:
-        return text[:limit].rstrip() + "..."
-    return text
-
-
-def _summarize_letsfg_error(text: str) -> str:
-    clean = _safe_text(text, 1200)
-    lowered = clean.lower()
-    has_api_key_msg = "no letsfg_api_key" in lowered or "let's fg api key" in lowered
-    has_browser_wait = "waiting for browser slot" in lowered
-    has_timeout = "timeout" in lowered
-    # Both no-API-key and all-browsers-busy: the common real-world failure mode
-    if has_api_key_msg and has_browser_wait:
-        return "未配置 LetsFG 云端 API Key 且本地浏览器连接器全部占满，未在限定时间内返回票价。"
-    if has_api_key_msg:
-        return "未配置 LetsFG 云端 API Key，本地搜索未返回票价。"
-    if has_browser_wait:
-        return "本地浏览器连接器全部占满，未在限定时间内返回票价。"
-    if has_timeout:
-        return "本地搜索超过限定时间。"
-    # Don't leak raw connector logs; return a clean generic message
-    return "本地搜索未返回可解析的机票结果。"
-
-
-def _search_letsfg_local(
-    dep_iata: str,
-    arr_iata: str,
-    date: str,
-    limit: int,
-    adults: int = 1,
-    currency: str = "CNY",
-) -> tuple[str, bool]:
-    if not dep_iata or not arr_iata or not date:
-        return "LetsFG 查询跳过：缺少出发机场、到达机场或日期。", False
-
-    script = r"""
-import asyncio
-import json
-import sys
-from letsfg.local import search_local
-
-origin, destination, date_from, limit, adults, currency, mode, max_browsers, max_stopovers = sys.argv[1:10]
-
-async def main():
-    result = await search_local(
-        origin,
-        destination,
-        date_from,
-        adults=int(adults),
-        currency=currency,
-        limit=int(limit),
-        max_browsers=int(max_browsers),
-        max_stopovers=int(max_stopovers),
-        mode=mode,
-    )
-    print(json.dumps(result, ensure_ascii=False, default=str))
-
-asyncio.run(main())
-"""
-    try:
-        completed = subprocess.run(
-            [
-                sys.executable,
-                "-c",
-                script,
-                dep_iata,
-                arr_iata,
-                date,
-                str(max(1, min(int(limit), 10))),
-                str(max(1, int(adults))),
-                currency,
-                _letsfg_search_mode(),
-                str(_letsfg_max_browsers()),
-                str(_letsfg_max_stopovers()),
-            ],
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=_letsfg_search_timeout(),
-            env={**os.environ, "PYTHONIOENCODING": "utf-8"},
-        )
-    except FileNotFoundError:
-        return "LetsFG 未返回实时票价：当前 Python 环境未安装 letsfg，已回退到 Aviationstack。", False
-    except subprocess.TimeoutExpired:
-        return f"LetsFG 未在 {_letsfg_search_timeout()} 秒内返回实时票价，已回退到 Aviationstack。", False
-
-    try:
-        data = json.loads(completed.stdout.strip().splitlines()[-1])
-    except (json.JSONDecodeError, IndexError):
-        if completed.returncode != 0:
-            error = _summarize_letsfg_error(f"{completed.stderr}\n{completed.stdout}")
-            return f"LetsFG 未返回实时票价：{error} 已回退到 Aviationstack。", False
-        return "LetsFG 未返回实时票价：未能解析本地搜索结果，已回退到 Aviationstack。", False
-
-    offers = data.get("offers") or []
-    if not offers:
-        return "LetsFG 未查询到可用机票报价，已回退到 Aviationstack。", False
-    return _format_letsfg_offers(data, dep_iata, arr_iata, limit), True
-
-
-def _segment_time(value: object) -> str:
-    text = _poi_scalar(value, "")
-    if not text:
-        return "未知"
-    return text.replace("T", " ").split("+")[0].replace("Z", "")
-
-
-def _format_letsfg_offers(data: dict, dep_iata: str, arr_iata: str, limit: int) -> str:
-    offers = data.get("offers") or []
-    currency = _first_non_empty(data.get("currency"), default="CNY")
-    lines = [
-        "数据源：LetsFG 本地实时机票搜索",
-        f"查询航线：{dep_iata} → {arr_iata}",
-        f"报价数量：{data.get('total_results', len(offers))}",
-        "说明：价格来自 LetsFG 本地连接器实时搜索，库存、税费、行李和最终支付价仍以航司/购票页面确认结果为准。",
-    ]
-    pricing_note = _poi_scalar(data.get("pricing_note"), "")
-    if pricing_note:
-        lines.append(f"价格说明：{pricing_note}")
-
-    sorted_offers = sorted(
-        offers,
-        key=lambda item: float(item.get("price") or 10**12),
-    )[: max(1, min(int(limit), 10))]
-    for index, offer in enumerate(sorted_offers, start=1):
-        outbound = offer.get("outbound") or {}
-        segments = outbound.get("segments") or []
-        first = segments[0] if segments else {}
-        last = segments[-1] if segments else {}
-        airlines = offer.get("airlines") or []
-        airline = _first_non_empty(offer.get("owner_airline"), ", ".join(airlines), first.get("airline_name"), default="未知航司")
-        flight_no = " + ".join(
-            _first_non_empty(seg.get("flight_no"), seg.get("airline"), default="").strip()
-            for seg in segments
-            if _first_non_empty(seg.get("flight_no"), seg.get("airline"), default="").strip()
-        )
-        route = " → ".join([segments[0].get("origin", dep_iata), *[seg.get("destination", "") for seg in segments]]) if segments else f"{dep_iata} → {arr_iata}"
-        price_text = _first_non_empty(offer.get("price_formatted"), default="")
-        if not price_text:
-            price_text = _format_money(offer.get("price"), _first_non_empty(offer.get("currency"), currency, default="CNY"))
-        departure_time = _segment_time(first.get("departure"))
-        arrival_time = _segment_time(last.get("arrival"))
-        duration = _format_minutes(outbound.get("total_duration_seconds") or 0)
-        stopovers = outbound.get("stopovers")
-        seats = offer.get("availability_seats")
-        booking_url = _poi_scalar(offer.get("booking_url"), "")
-        extras = []
-        if flight_no:
-            extras.append(f"航班 {flight_no}")
-        if stopovers is not None:
-            extras.append(f"中转 {stopovers} 次")
-        if seats:
-            extras.append(f"余位 {seats}")
-        if booking_url:
-            extras.append(f"预订链接 {booking_url}")
-        lines.append(
-            f"{index}. {airline}｜{route}｜{departure_time} → {arrival_time}｜"
-            f"耗时 {duration}｜票价 {price_text}"
-            + (f"｜{'；'.join(extras)}" if extras else "")
-        )
-    return "\n".join(lines)
-
-
-def _log_tool_start(name: str, **kwargs: object) -> float:
-    start = time.time()
-    print(f"\n{'=' * 20} 开始调用工具: {name} {'=' * 20}")
-    print(f"工具调用时间戳: {start:.2f}")
-    for key, value in kwargs.items():
-        print(_safe_text(f"- {key}: {value}"))
-    print("=" * 70)
-    return start
-
-
-def _log_tool_end(name: str, start: float, result: str) -> None:
-    elapsed = time.time() - start
-    print(f"\n工具 {name} 调用完成，耗时 {elapsed:.2f} 秒")
-    print(_safe_text(result))
 
 
 @tool
