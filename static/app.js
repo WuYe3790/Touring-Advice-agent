@@ -491,27 +491,10 @@ function itineraryMapItems(poiCategories = [], hotels = []) {
   });
 }
 
-function compactPlaceText(text) {
-  return String(text || "")
-    .replace(/[·\-—_（）()【】\[\]{}<>《》,，.。:：;；!！?？\s]/g, "")
-    .toLowerCase();
-}
-
 const GENERIC_PLACE_ALIASES = new Set([
   "景点", "酒店", "餐厅", "餐饮", "本地菜", "湖北菜", "湘菜", "川菜", "粤菜", "中餐厅",
   "购物", "商圈", "商场", "公园", "博物馆", "步行街", "风景名胜", "国家级景点",
 ].map(compactPlaceText));
-
-function placeAliases(name) {
-  const raw = String(name || "");
-  const full = compactPlaceText(raw);
-  const parts = raw
-    .split(/[()（）·\-—–|,，、;；:：\s]+/)
-    .map(compactPlaceText)
-    .filter(Boolean);
-  return [...new Set([full, ...parts])]
-    .filter((alias) => alias.length >= 3 && !GENERIC_PLACE_ALIASES.has(alias));
-}
 
 function compactPlaceText(text) {
   return String(text || "")
@@ -955,26 +938,6 @@ function setMessageText(article, text) {
   messagesEl.scrollTop = messagesEl.scrollHeight;
 }
 
-function appendMeta(article, data) {
-  const bubble = article.querySelector(".bubble");
-  if (!bubble || !data) return;
-  const meta = document.createElement("div");
-  meta.className = "message-meta";
-  const parts = [];
-  if (data.mode) parts.push(data.mode);
-  if (data.model) parts.push(data.model);
-  if (typeof data.elapsed_seconds === "number") parts.push(`耗时 ${data.elapsed_seconds}s`);
-  meta.textContent = parts.join(" · ");
-  if (meta.textContent) {
-    bubble.dataset.meta = meta.textContent;
-    bubble.appendChild(meta);
-  }
-  if (Array.isArray(data.trace) && data.trace.length) {
-    bubble.dataset.trace = JSON.stringify(data.trace);
-    bubble.appendChild(renderTrace(data.trace));
-  }
-}
-
 function summarizeUsage(usage) {
   if (!usage || typeof usage !== "object") return "";
   const total = usage.total_tokens ?? usage.total ?? "";
@@ -985,56 +948,6 @@ function compactResult(text) {
   if (!text) return "";
   const compact = String(text).replace(/\s+/g, " ").trim();
   return compact.length > 140 ? `${compact.slice(0, 140)}...` : compact;
-}
-
-function traceLabel(item) {
-  if (item.type === "tool_call") return "工具";
-  if (item.type === "tool_result") return "返回";
-  if (item.type === "llm_response") return "模型";
-  return "阶段";
-}
-
-function renderTrace(trace, expanded = false) {
-  const details = document.createElement("details");
-  details.className = "trace-panel";
-  if (expanded) {
-    details.open = true;
-  }
-  const summary = document.createElement("summary");
-  const toolCount = trace.filter((item) => item.type === "tool_call").length;
-  const llmCount = trace.filter((item) => item.type === "llm_response").length;
-  summary.textContent = trace.length
-    ? `执行过程：${toolCount} 次工具调用，${llmCount} 次模型响应`
-    : "执行过程：等待智能体行动";
-  details.appendChild(summary);
-
-  const list = document.createElement("div");
-  list.className = "trace-list";
-  trace.forEach((item) => {
-    const row = document.createElement("div");
-    row.className = `trace-item ${item.type}`;
-    if (item.type === "tool_call") {
-      const args = JSON.stringify(item.args || {}, null, 2);
-      row.innerHTML = `
-        <div class="trace-title"><span>${traceLabel(item)}</span>调用工具：${escapeHtml(item.tool || "unknown")}</div>
-        <pre>${escapeHtml(args)}</pre>
-        ${item.result ? `<p><strong>返回：</strong>${escapeHtml(compactResult(item.result))}</p>` : '<p class="trace-pending">等待工具返回</p>'}
-      `;
-    } else if (item.type === "llm_response") {
-      row.innerHTML = `
-        <div class="trace-title"><span>${traceLabel(item)}</span>模型响应：${escapeHtml(item.model || "unknown")}</div>
-        <p>${escapeHtml(summarizeUsage(item.usage))}</p>
-      `;
-    } else {
-      row.innerHTML = `
-        <div class="trace-title"><span>${traceLabel(item)}</span>工具返回：${escapeHtml(item.tool || "unknown")}</div>
-        <p>${escapeHtml(compactResult(item.result))}</p>
-      `;
-    }
-    list.appendChild(row);
-  });
-  details.appendChild(list);
-  return details;
 }
 
 function renderLoadingStatus(article, text, trace = [], stats = {}) {
@@ -1117,40 +1030,6 @@ function parseSseBuffer(buffer) {
   return { events, rest };
 }
 
-async function requestChatStream(payload, onEvent) {
-  const response = await fetch("/api/chat/stream", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(payload),
-  });
-
-  if (!response.ok) {
-    const data = await response.json().catch(() => ({}));
-    throw new Error(data.error || `HTTP ${response.status}`);
-  }
-
-  if (!response.body) {
-    throw new Error("当前浏览器不支持流式读取。");
-  }
-
-  const reader = response.body.getReader();
-  const decoder = new TextDecoder("utf-8");
-  let buffer = "";
-
-  while (true) {
-    const { value, done } = await reader.read();
-    if (done) break;
-    buffer += decoder.decode(value, { stream: true });
-    const parsed = parseSseBuffer(buffer);
-    buffer = parsed.rest;
-    parsed.events.forEach(onEvent);
-  }
-
-  buffer += decoder.decode();
-  const parsed = parseSseBuffer(buffer + "\n\n");
-  parsed.events.forEach(onEvent);
-}
-
 async function loadConversations() {
   try {
     const response = await fetch("/api/conversations");
@@ -1220,12 +1099,6 @@ async function deleteConversation(conversationId) {
     renderWelcome();
   }
   await loadConversations();
-}
-
-function setBusy(isBusy) {
-  inputEl.disabled = isBusy;
-  sendBtn.disabled = isBusy;
-  sendBtn.querySelector("span").textContent = isBusy ? "生成中" : "发送";
 }
 
 function traceStatusLabel(status) {

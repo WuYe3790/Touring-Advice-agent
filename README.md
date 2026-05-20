@@ -145,7 +145,7 @@ RAPIDAPI_HOST=booking-com15.p.rapidapi.com
 ```text
 .
 ├── app.py                         # Flask 启动入口
-├── web.py                         # Flask 路由、SSE、会话接口、高德前端代理
+├── web.py                         # Flask 兼容入口，创建 server app
 ├── run.py                         # CLI 启动入口
 ├── requirements.txt               # Python 依赖
 ├── .env.example                   # 环境变量模板
@@ -158,15 +158,37 @@ RAPIDAPI_HOST=booking-com15.p.rapidapi.com
 │   └── styles.css                 # 页面样式
 ├── templates/
 │   └── index.html                 # 页面模板
+├── server/
+│   ├── __init__.py                # Flask app 工厂与蓝图注册
+│   ├── bootstrap.py               # 项目路径、缓存目录和运行环境初始化
+│   ├── context.py                 # 前端定位上下文、乱码检测
+│   ├── core_routes.py             # 首页、图片代理、运行状态接口
+│   ├── amap_client.py             # 高德 Web API 客户端
+│   ├── amap_routes.py             # 高德定位、联想、静态地图代理
+│   ├── conversation_routes.py     # 历史会话 CRUD
+│   └── chat_routes.py             # 普通聊天与 SSE 流式聊天接口
 └── src/
     └── travel_agent/
-        ├── agent.py               # Agent、提示词、trace、结构化 JSON 提取
+        ├── agent.py               # Agent 构建、运行入口、流式事件
         ├── cli.py                 # CLI 参数解析
         ├── config.py              # 配置读取
+        ├── prompts.py             # 系统提示词、工具使用规则、结构化输出协议
         ├── storage.py             # SQLite 会话持久化
+        ├── structured.py          # 结构化 JSON 提取、卡片数据兜底解析
+        ├── tool_data.py           # 天气代码、机场三字码、酒店城市别名等静态数据
+        ├── trace.py               # 执行报告、工具状态、trace 清洗
         ├── tools.py               # 核心工具
         └── train_tools.py         # 12306-MCP 客户端和火车票工具
 ```
+
+当前重构原则：
+
+- `web.py` 只保留旧入口兼容，具体后端接口都在 `server/` 蓝图中维护。
+- `travel_agent.prompts` 独立维护大段系统提示词和结构化输出协议，后续调整 Agent 行为时无需在运行逻辑中翻找长文本。
+- `travel_agent.structured` 独立处理 JSON 提取、酒店卡片兜底、天气指数兜底等结构化数据逻辑，降低前后端卡片问题的定位成本。
+- `travel_agent.trace` 独立管理执行报告状态，方便排查“工具调用显示异常”“trace 状态误判”等问题。
+- `travel_agent.tool_data` 独立保存机场三字码、酒店城市别名、天气代码等静态数据，后续补充城市映射时不需要改工具逻辑。
+- `travel_agent.tools` 仍保留为统一工具入口，避免大规模改动 LangChain 工具注册；后续若继续拆工具，应先按天气、地图、交通、航班、酒店分组，并保留兼容导入。
 
 ## Agent 架构
 
@@ -412,6 +434,10 @@ Get-CimInstance Win32_Process |
 - 空气质量查询升级到和风 `airquality/v1/current/{latitude}/{longitude}` 新接口；旧版 `/v7/air/now` 只在新接口失败时作为兜底。
 - 天气预警查询升级到和风 `weatheralert/v1/current/{latitude}/{longitude}` 新接口；旧版 `/v7/warning/now` 只在新接口失败时作为兜底。
 - 新增天气生活指数工具 `get_weather_indices`，接入和风 `/v7/indices/1d`，前端新增“天气指数”卡片。
+- 完成一轮保守架构解耦：`web.py` 收缩为兼容入口，新增 `server/` 包拆分 Flask app 工厂、核心路由、高德代理、会话路由和聊天/SSE 路由；新增 `travel_agent.trace` 管理执行报告与工具状态判定。
+- 继续拆分 Agent 内部职责：新增 `travel_agent.prompts` 管理系统提示词和结构化输出协议，新增 `travel_agent.structured` 管理结构化 JSON 提取、酒店卡片兜底和天气指数兜底解析。
+- 新增 `travel_agent.tool_data`，把天气代码、机场三字码、酒店城市别名从核心工具逻辑中拆出，降低 `tools.py` 的维护压力。
+- 清理前端 `static/app.js` 中被后续实现覆盖的重复函数定义，避免维护时误改旧版 `renderTrace`、`requestChatStream`、`appendMeta`、`setBusy` 等无效逻辑。
 
 ## 后续优化路线
 
