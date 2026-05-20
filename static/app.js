@@ -1829,6 +1829,66 @@ inputEl.addEventListener("keydown", (event) => {
   }
 });
 
+// ====== Sidebar Tabs & Collapse ======
+
+const appShell = document.querySelector("#appShell");
+const sidebar = document.querySelector("#sidebar");
+const tabButtons = document.querySelectorAll(".tab-btn");
+const tabContents = document.querySelectorAll(".sidebar-tab-content");
+const collapseSidebarBtn = document.querySelector("#collapseSidebarBtn");
+const expandSidebarBtn = document.querySelector("#expandSidebarBtn");
+
+const ACTIVE_TAB_KEY = "travel_agent_sidebar_active_tab";
+const SIDEBAR_COLLAPSED_KEY = "travel_agent_sidebar_collapsed";
+
+function switchTab(tabId) {
+  tabButtons.forEach(btn => {
+    btn.classList.toggle("active", btn.dataset.tab === tabId);
+  });
+  tabContents.forEach(content => {
+    content.classList.toggle("active", content.id === `tab-${tabId}`);
+  });
+  localStorage.setItem(ACTIVE_TAB_KEY, tabId);
+}
+
+// Bind tabs click
+tabButtons.forEach(btn => {
+  btn.addEventListener("click", () => {
+    switchTab(btn.dataset.tab);
+  });
+});
+
+// Restore active tab
+const savedTab = localStorage.getItem(ACTIVE_TAB_KEY) || "history";
+switchTab(savedTab);
+
+function setSidebarCollapsed(collapsed) {
+  if (collapsed) {
+    appShell.classList.add("sidebar-collapsed");
+    if (expandSidebarBtn) expandSidebarBtn.style.display = "inline-flex";
+  } else {
+    appShell.classList.remove("sidebar-collapsed");
+    if (expandSidebarBtn) expandSidebarBtn.style.display = "none";
+  }
+  localStorage.setItem(SIDEBAR_COLLAPSED_KEY, collapsed ? "true" : "false");
+}
+
+if (collapseSidebarBtn) {
+  collapseSidebarBtn.addEventListener("click", () => {
+    setSidebarCollapsed(true);
+  });
+}
+
+if (expandSidebarBtn) {
+  expandSidebarBtn.addEventListener("click", () => {
+    setSidebarCollapsed(false);
+  });
+}
+
+// Restore sidebar state
+const savedSidebarCollapsed = localStorage.getItem(SIDEBAR_COLLAPSED_KEY) === "true";
+setSidebarCollapsed(savedSidebarCollapsed);
+
 renderWelcome();
 updateLocationStatus();
 loadStatus();
