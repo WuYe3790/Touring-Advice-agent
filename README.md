@@ -122,7 +122,8 @@ QWEATHER_JWT_PUBLIC_KEY_SHA256=控制台显示的公钥 SHA-256，仅用于人�
 AVIATIONSTACK_API_KEY=你的 Aviationstack API Key
 LETSFG_SEARCH_TIMEOUT=600
 LETSFG_SEARCH_MODE=fast
-LETSFG_MAX_BROWSERS=1
+LETSFG_MAX_BROWSERS=3
+LETSFG_MAX_STOPOVERS=0
 RAPIDAPI_KEY=你的 RapidAPI Key
 RAPIDAPI_HOST=booking-com15.p.rapidapi.com
 ```
@@ -133,6 +134,7 @@ RAPIDAPI_HOST=booking-com15.p.rapidapi.com
 - DeepSeek 控制台没有请求记录时，先检查前端是否开启了“离线演示”。
 - 和风天气优先使用 JWT 认证；JWT 缺失或失败时回退 API Key。空气质量已升级到 `airquality/v1/current/{lat}/{lon}`，天气预警已升级到 `weatheralert/v1/current/{lat}/{lon}`，旧版 v7 接口只作为兜底。
 - LetsFG 当前用于优先查询实时机票报价，本地搜索可能较慢，因此默认设置 600 秒超时，失败后自动回退到 Aviationstack。
+- LetsFG 默认使用 3 个本地浏览器槽，并优先查询直飞报价（`LETSFG_MAX_STOPOVERS=0`）；如需中转机票，可改为 `1` 或 `2`。
 - Aviationstack 当前只用于航班时刻/状态回退查询，不提供真实机票价格。
 - Booking.com/RapidAPI 当前用于酒店价格参考，价格和库存以 Booking.com 确认页为准。
 - 12306 工具需要本机 Node.js / npx，首次调用可能较慢。
@@ -405,6 +407,7 @@ Get-CimInstance Win32_Process |
 - 新增 `LETSFG_SEARCH_TIMEOUT`、`LETSFG_SEARCH_MODE`、`LETSFG_MAX_BROWSERS` 配置项。
 - 更新 Agent 提示词：用户只询问航班/机票时，优先只回答航班和票价相关内容，不扩展成完整旅行规划。
 - 清理 LetsFG 测试产生的本地浏览器缓存目录，避免无关文件进入项目。
+- 优化 LetsFG 稳定性：默认提高本地浏览器并发槽到 3，优先直飞报价，清洗连接器日志中的乱码；LetsFG 未完成时返回“未返回实时票价并回退”，不再把整个航班工具标记为异常。
 - 增加和风天气 JWT 认证支持：`Authorization: Bearer <JWT>` 优先，API Key 保留为回退。
 - 空气质量查询升级到和风 `airquality/v1/current/{latitude}/{longitude}` 新接口；旧版 `/v7/air/now` 只在新接口失败时作为兜底。
 - 天气预警查询升级到和风 `weatheralert/v1/current/{latitude}/{longitude}` 新接口；旧版 `/v7/warning/now` 只在新接口失败时作为兜底。

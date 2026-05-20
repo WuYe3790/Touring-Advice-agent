@@ -6,6 +6,7 @@ import os
 import re
 import subprocess
 import sys
+import unicodedata
 from datetime import datetime, timedelta
 
 import jwt
@@ -621,9 +622,37 @@ def _letsfg_search_mode() -> str:
 
 def _letsfg_max_browsers() -> int:
     try:
-        return max(1, min(int(_get_env_key("LETSFG_MAX_BROWSERS") or 1), 4))
+        return max(1, min(int(_get_env_key("LETSFG_MAX_BROWSERS") or 3), 6))
     except ValueError:
-        return 1
+        return 3
+
+
+def _letsfg_max_stopovers() -> int:
+    try:
+        return max(0, min(int(_get_env_key("LETSFG_MAX_STOPOVERS") or 0), 2))
+    except ValueError:
+        return 0
+
+
+def _safe_text(value: object, limit: int | None = None) -> str:
+    text = str(value or "")
+    text = text.replace("\ufffd", "")
+    text = "".join(ch for ch in text if ch in "\n\r\t" or unicodedata.category(ch)[0] != "C")
+    if limit is not None and len(text) > limit:
+        return text[:limit].rstrip() + "..."
+    return text
+
+
+def _summarize_letsfg_error(text: str) -> str:
+    clean = _safe_text(text, 1200)
+    lowered = clean.lower()
+    if "waiting for browser slot" in lowered:
+        return "本地浏览器连接器长时间排队，未在限定时间内返回票价。"
+    if "no letsfg_api_key" in lowered and not clean.strip().replace("No LETSFG_API_KEY", "").strip():
+        return "未配置 LetsFG 云端 API Key，本地搜索未返回票价。"
+    if "timeout" in lowered:
+        return "本地搜索超过限定时间。"
+    return clean.strip() or "本地搜索未返回可解析结果。"
 
 
 def _search_letsfg_local(
@@ -643,7 +672,7 @@ import json
 import sys
 from letsfg.local import search_local
 
-origin, destination, date_from, limit, adults, currency, mode, max_browsers = sys.argv[1:9]
+origin, destination, date_from, limit, adults, currency, mode, max_browsers, max_stopovers = sys.argv[1:10]
 
 async def main():
     result = await search_local(
@@ -654,6 +683,7 @@ async def main():
         currency=currency,
         limit=int(limit),
         max_browsers=int(max_browsers),
+        max_stopovers=int(max_stopovers),
         mode=mode,
     )
     print(json.dumps(result, ensure_ascii=False, default=str))
@@ -674,30 +704,31 @@ asyncio.run(main())
                 currency,
                 _letsfg_search_mode(),
                 str(_letsfg_max_browsers()),
+                str(_letsfg_max_stopovers()),
             ],
             capture_output=True,
             text=True,
             encoding="utf-8",
             errors="replace",
             timeout=_letsfg_search_timeout(),
+            env={**os.environ, "PYTHONIOENCODING": "utf-8"},
         )
     except FileNotFoundError:
-        return "LetsFG 查询不可用：当前 Python 环境未安装 letsfg。", False
+        return "LetsFG 未返回实时票价：当前 Python 环境未安装 letsfg，已回退到 Aviationstack。", False
     except subprocess.TimeoutExpired:
-        return f"LetsFG 查询超时：超过 {_letsfg_search_timeout()} 秒未返回，已回退到 Aviationstack。", False
-
-    if completed.returncode != 0:
-        error = (completed.stderr or completed.stdout or "").strip()
-        return f"LetsFG 查询失败：{error[:500] or '未知错误'}", False
+        return f"LetsFG 未在 {_letsfg_search_timeout()} 秒内返回实时票价，已回退到 Aviationstack。", False
 
     try:
         data = json.loads(completed.stdout.strip().splitlines()[-1])
     except (json.JSONDecodeError, IndexError):
-        return "LetsFG 查询失败：未能解析返回结果。", False
+        if completed.returncode != 0:
+            error = _summarize_letsfg_error(f"{completed.stderr}\n{completed.stdout}")
+            return f"LetsFG 未返回实时票价：{error} 已回退到 Aviationstack。", False
+        return "LetsFG 未返回实时票价：未能解析本地搜索结果，已回退到 Aviationstack。", False
 
     offers = data.get("offers") or []
     if not offers:
-        return "LetsFG 未查询到可用机票报价。", False
+        return "LetsFG 未查询到可用机票报价，已回退到 Aviationstack。", False
     return _format_letsfg_offers(data, dep_iata, arr_iata, limit), True
 
 
@@ -769,7 +800,7 @@ def _log_tool_start(name: str, **kwargs: object) -> float:
     print(f"\n{'=' * 20} 开始调用工具: {name} {'=' * 20}")
     print(f"工具调用时间戳: {start:.2f}")
     for key, value in kwargs.items():
-        print(f"- {key}: {value}")
+        print(_safe_text(f"- {key}: {value}"))
     print("=" * 70)
     return start
 
@@ -777,7 +808,7 @@ def _log_tool_start(name: str, **kwargs: object) -> float:
 def _log_tool_end(name: str, start: float, result: str) -> None:
     elapsed = time.time() - start
     print(f"\n工具 {name} 调用完成，耗时 {elapsed:.2f} 秒")
-    print(result)
+    print(_safe_text(result))
 
 
 @tool
