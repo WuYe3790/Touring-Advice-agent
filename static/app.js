@@ -1966,6 +1966,9 @@ function buildStructuredCards(data) {
   if (data.weather_alerts && data.weather_alerts.length) {
     html += renderWeatherAlertCards(data.weather_alerts);
   }
+  if (data.weather_indices && data.weather_indices.length) {
+    html += renderWeatherIndexCards(data.weather_indices);
+  }
   if (data.daily_itinerary && data.daily_itinerary.length) {
     html += renderItineraryTimeline(data.daily_itinerary, data.poi_recommendations || [], data.hotel_options || []);
   }
@@ -2040,6 +2043,35 @@ function renderWeatherAlertCards(alerts) {
     `;
   }).join("");
   return `<div class="card-section"><h3 class="card-section-title">天气预警</h3><div class="weather-alert-grid">${cards}</div></div>`;
+}
+
+function weatherIndexClass(item) {
+  const text = `${item.name || ""} ${item.category || ""} ${item.level || ""} ${item.text || ""}`;
+  if (/不适宜|较不宜|强|很强|较差|易发|高风险|严重/.test(text)) return "orange";
+  if (/适宜|舒适|良好|弱|不需要|较少/.test(text)) return "clear";
+  return "default";
+}
+
+function renderWeatherIndexCards(indices) {
+  const cards = indices.map(item => {
+    const kind = weatherIndexClass(item);
+    return `
+      <div class="weather-alert-card weather-index-card alert-${kind}">
+        <div class="weather-alert-head">
+          <span class="weather-alert-badge">${escapeHtml(item.category || item.level || "指数")}</span>
+          <span class="weather-alert-city">${escapeHtml(item.city || "")}</span>
+        </div>
+        <h4>${escapeHtml(item.name || "天气指数")}</h4>
+        <div class="weather-alert-meta">
+          ${item.date ? `<span>${escapeHtml(item.date)}</span>` : ""}
+          ${item.level ? `<span>等级 ${escapeHtml(item.level)}</span>` : ""}
+          ${item.data_source ? `<span>${escapeHtml(item.data_source)}</span>` : ""}
+        </div>
+        ${item.text ? `<p>${escapeHtml(item.text)}</p>` : ""}
+      </div>
+    `;
+  }).join("");
+  return `<div class="card-section"><h3 class="card-section-title">天气指数</h3><div class="weather-alert-grid weather-index-grid">${cards}</div></div>`;
 }
 
 function renderItineraryTimeline(itinerary, poiCategories = [], hotels = []) {
@@ -2259,6 +2291,9 @@ function renderDataCredibility(data) {
   (data.weather_alerts || []).forEach((item) => {
     if (item.data_source) sources.set(item.data_source, "天气预警");
     if (item.status === "unavailable") limits.push("天气预警或空气质量可能受接口权限影响。");
+  });
+  (data.weather_indices || []).forEach((item) => {
+    if (item.data_source) sources.set(item.data_source, "天气指数");
   });
   (data.transport_options || []).forEach((item) => {
     if (item.data_source) sources.set(item.data_source, "交通方案");

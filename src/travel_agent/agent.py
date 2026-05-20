@@ -45,6 +45,7 @@ BASE_SYSTEM_PROMPT_TEMPLATE = """
   "summary": "行程整体概述，一句话概括",
   "weather": [{"city": "目的地城市", "date": "日期", "temperature": "温度", "condition": "天气", "humidity": "湿度", "wind": "风速"}],
   "weather_alerts": [{"city": "城市", "title": "预警标题", "type": "预警类型", "severity": "等级或颜色", "pub_time": "发布时间", "text": "预警说明", "status": "active/no_active/unavailable", "data_source": "数据源"}],
+  "weather_indices": [{"city": "城市", "name": "指数名", "date": "日期", "level": "等级", "category": "类别", "text": "生活建议", "data_source": "数据源"}],
   "transport_options": [{
     "mode": "交通方式或车次/航班号",
     "category": "flight/train/interline_train/transit/walking/bicycling/driving/traffic",
@@ -66,7 +67,7 @@ BASE_SYSTEM_PROMPT_TEMPLATE = """
   "poi_recommendations": [{"category": "分类标签", "items": [{"name": "地点名", "type": "类型", "address": "地址", "rating": "评分", "cost": "人均费用", "tel": "电话", "location": "经纬度", "map_url": "地图链接"}]}]
 }
 ```
-要求：内容必须与你的 Markdown 回答保持一致；无数据时使用空数组 []；json 代码块必须放在回答最末尾；不要在 json 之后添加任何文本；不要因为用户要求简短、快速或只回答一句话而省略 json 代码块。weather_alerts 用于天气灾害预警卡片；如果工具返回当前无预警，可写入一条 status 为 "no_active" 的记录；如果接口权限不可用，除非用户专门询问预警，否则可保持 []。hotel_options 用于真实酒店价格卡片；非酒店查询时必须为 []。transport_options 可以使用 category/data_source/status/departure_time/arrival_time/legs 等可选字段；中转火车方案必须把两段或多段车次写入 legs，方便前端渲染中转卡片。
+要求：内容必须与你的 Markdown 回答保持一致；无数据时使用空数组 []；json 代码块必须放在回答最末尾；不要在 json 之后添加任何文本；不要因为用户要求简短、快速或只回答一句话而省略 json 代码块。weather_alerts 用于天气灾害预警卡片；weather_indices 用于穿衣、运动、防晒、舒适度、交通等天气生活指数卡片；如果工具返回当前无预警，可写入一条 status 为 "no_active" 的记录；如果接口权限不可用，除非用户专门询问预警，否则可保持 []。hotel_options 用于真实酒店价格卡片；非酒店查询时必须为 []。transport_options 可以使用 category/data_source/status/departure_time/arrival_time/legs 等可选字段；中转火车方案必须把两段或多段车次写入 legs，方便前端渲染中转卡片。
 """
 
 BASE_SYSTEM_PROMPT = BASE_SYSTEM_PROMPT_TEMPLATE.replace("__DEFAULT_DATE__", DEFAULT_DATE)
@@ -84,29 +85,30 @@ REAL_DATA_TOOL_PROMPT = """
 1. get_weather_info 会优先使用和风天气查询实时天气和3日预报，失败时回退 Open-Meteo。
 2. get_air_quality_info 可用和风天气查询实时空气质量，适合判断户外活动、老人儿童出行和骑行步行舒适度。
 3. get_weather_alerts 可用和风天气查询当前天气灾害预警，适合补充安全提醒。
-4. get_transport_advice 会优先使用高德地图解析路线距离、驾车耗时和费用估算，失败时回退通用交通建议。
-5. get_public_transit_plan 可用高德地图查询公交/地铁换乘方案，适合市内景点、车站、酒店之间移动。
-6. get_walking_route 可用高德地图查询步行路线，适合景点、酒店、地铁站之间的短距离可达性判断。
-7. get_bicycling_route 可用高德地图查询骑行路线，适合 1-8 公里市内短途移动或共享单车方案判断。
-8. get_route_distance_matrix 可用高德地图比较多个出发点到同一目的地的距离/耗时，适合住宿选址、景点排序、去车站/机场耗时比较。
-9. get_traffic_status 可用高德地图查询指定地点周边实时交通态势，适合自驾、打车、机场/车站接驳和高峰期拥堵风险判断。
-10. search_travel_pois 可用高德地图搜索目的地景点、博物馆、餐饮、商圈、酒店等 POI。
-11. search_nearby_pois 可用高德地图围绕某个景点、车站或酒店查询周边餐饮、住宿、咖啡、地铁站等 POI。
-12. get_place_location 可用高德地图核验地点地址和经纬度。
-13. get_map_marker_link 可生成不暴露 API Key 的高德地图地点标记链接，适合放入 POI 或注意事项。
-14. search_hotel_prices 可用 Booking.com RapidAPI 查询真实酒店价格，适合住宿推荐、酒店价格对比和预算估算；价格为接口返回的实时参考价，最终库存/税费/支付价以 Booking.com 为准。
-15. search_train_tickets 可用 12306 查询真实火车票余票（高铁/动车/普速），支持按车型筛选和数量限制。
-16. search_interline_train_tickets 可用 12306 查询中转余票方案，适合直达车次少、不合适或用户明确接受中转时调用。
-17. get_train_route 可用 12306 查询特定车次的经停站和时刻表。
-18. search_flight_options 会优先尝试 LetsFG 本地实时机票搜索，返回真实机票报价；如果 LetsFG 超时或失败，会自动回退到 Aviationstack 查询航班时刻/状态。Aviationstack 不提供机票价格。
+4. get_weather_indices 可用和风天气查询生活指数，适合穿衣、防晒、运动、舒适度、交通天气条件等出行体验判断。
+5. get_transport_advice 会优先使用高德地图解析路线距离、驾车耗时和费用估算，失败时回退通用交通建议。
+6. get_public_transit_plan 可用高德地图查询公交/地铁换乘方案，适合市内景点、车站、酒店之间移动。
+7. get_walking_route 可用高德地图查询步行路线，适合景点、酒店、地铁站之间的短距离可达性判断。
+8. get_bicycling_route 可用高德地图查询骑行路线，适合 1-8 公里市内短途移动或共享单车方案判断。
+9. get_route_distance_matrix 可用高德地图比较多个出发点到同一目的地的距离/耗时，适合住宿选址、景点排序、去车站/机场耗时比较。
+10. get_traffic_status 可用高德地图查询指定地点周边实时交通态势，适合自驾、打车、机场/车站接驳和高峰期拥堵风险判断。
+11. search_travel_pois 可用高德地图搜索目的地景点、博物馆、餐饮、商圈、酒店等 POI。
+12. search_nearby_pois 可用高德地图围绕某个景点、车站或酒店查询周边餐饮、住宿、咖啡、地铁站等 POI。
+13. get_place_location 可用高德地图核验地点地址和经纬度。
+14. get_map_marker_link 可生成不暴露 API Key 的高德地图地点标记链接，适合放入 POI 或注意事项。
+15. search_hotel_prices 可用 Booking.com RapidAPI 查询真实酒店价格，适合住宿推荐、酒店价格对比和预算估算；价格为接口返回的实时参考价，最终库存/税费/支付价以 Booking.com 为准。
+16. search_train_tickets 可用 12306 查询真实火车票余票（高铁/动车/普速），支持按车型筛选和数量限制。
+17. search_interline_train_tickets 可用 12306 查询中转余票方案，适合直达车次少、不合适或用户明确接受中转时调用。
+18. get_train_route 可用 12306 查询特定车次的经停站和时刻表。
+19. search_flight_options 会优先尝试 LetsFG 本地实时机票搜索，返回真实机票报价；如果 LetsFG 超时或失败，会自动回退到 Aviationstack 查询航班时刻/状态。Aviationstack 不提供机票价格。
 
 使用要求：
 - 当用户只是要求查某一种信息时，严格选择对应工具并窄回答：查航班只调用 search_flight_options；查高铁/火车只调用 search_train_tickets 或 search_interline_train_tickets；查天气只调用天气工具；查市内换乘只调用 get_public_transit_plan/步行/骑行等路线工具；查地点或周边只调用地点/POI 工具。不要因为识别出了城市就自动查询天气、景点、预算或完整日程。
-- 单点查询的正文不要输出完整规划模板，不要包含“每日行程”“住宿建议”“预算分析”“景点推荐”等无关小节；只给结果、数据来源和必要限制说明。JSON 中也只填相关字段，例如航班查询只填 transport_options 和 tips；周边餐饮只填 poi_recommendations 和 tips；天气查询只填 weather/weather_alerts 和 tips。
+- 单点查询的正文不要输出完整规划模板，不要包含“每日行程”“住宿建议”“预算分析”“景点推荐”等无关小节；只给结果、数据来源和必要限制说明。JSON 中也只填相关字段，例如航班查询只填 transport_options 和 tips；周边餐饮只填 poi_recommendations 和 tips；天气查询只填 weather/weather_alerts/weather_indices 和 tips。
 - 单点查询时，summary 用一句话概括查询结果；daily_itinerary 必须为 []；hotel_options 只有酒店查询才填写，否则为 []；budget 使用 {"total": 0, "breakdown": {}, "currency": "CNY", "notes": ""}；无关字段必须为空数组，不要为了卡片好看而填充。
 - 当用户请求具体目的地完整旅行规划时，除了天气和交通，优先调用 search_travel_pois 至少 3 次：分别搜索"景点"、"餐饮"或"本地菜"、"商圈"或"购物"。如果行程涉及住宿，应优先调用 search_hotel_prices 查询真实酒店价格；也可以补充 search_travel_pois 搜索"酒店"作为 POI/位置参考，但不要用高德酒店 POI 冒充真实房价。
 - 当用户询问"酒店/住宿/住哪里/酒店价格/附近酒店/多少钱一晚"时，调用 search_hotel_prices；如果用户给出城市、日期和人数，按用户参数查询；如果缺少入住/离店日期，在完整规划中可用行程日期推断，单点查询中应要求补充日期或使用默认明天/后天并明确说明。最终回答必须说明 Booking.com/RapidAPI 价格只是实时参考，最终以平台确认页为准。酒店结果必须写入 hotel_options。
-- 当用户行程包含较多户外活动、老人儿童出行、骑行步行、海边/山地/恶劣天气风险，或用户询问是否适合出行/天气预警时，可调用 get_air_quality_info 和 get_weather_alerts，并把可用的空气质量写入 tips，把天气预警写入 weather_alerts；如果工具返回"暂不可用"，不要把它当作规划失败，只需忽略或简短说明。用户单独查询天气预警时，只回答预警情况，不要扩展行程。
+- 当用户行程包含较多户外活动、老人儿童出行、骑行步行、海边/山地/恶劣天气风险，或用户询问是否适合出行/天气预警/穿什么/防晒/运动是否适合时，可调用 get_air_quality_info、get_weather_alerts 和 get_weather_indices，并把可用的空气质量写入 tips，把天气预警写入 weather_alerts，把生活指数写入 weather_indices；如果工具返回"暂不可用"，不要把它当作规划失败，只需忽略或简短说明。用户单独查询天气预警或天气指数时，只回答对应情况，不要扩展行程。
 - 当行程包含车站到酒店、酒店到景点、景点到景点等城市内移动时，优先调用 get_public_transit_plan 获取真实公交/地铁换乘参考，并按距离和用户偏好补充 get_walking_route 或 get_bicycling_route：1.5 公里内优先比较步行，1-8 公里可比较骑行，携带行李或天气不好时优先公共交通/网约车。若工具结果同时包含"地铁优先"和"公交备选"，最终回答中必须至少保留一个公交备选方案，不能只写地铁。
 - 当用户询问多个地点到同一目的地的远近、住宿区域选择、景点顺序或去车站/机场耗时时，调用 get_route_distance_matrix 做距离/耗时对比，不要凭感觉排序。
 - 当用户选择自驾/打车、涉及机场车站接驳、上下班高峰、节假日拥堵，或询问“堵不堵/路况怎么样”时，可调用 get_traffic_status，把实时路况和拥堵风险写入 transport_options 或 tips。
@@ -350,6 +352,7 @@ def extract_structured_json(text: str) -> dict | None:
         "summary",
         "weather",
         "weather_alerts",
+        "weather_indices",
         "transport_options",
         "daily_itinerary",
         "hotel_options",
@@ -420,10 +423,54 @@ def parse_hotel_options_from_trace(trace: list[dict]) -> list[dict]:
     return hotels
 
 
+def parse_weather_indices_from_trace(trace: list[dict]) -> list[dict]:
+    """Extract weather index cards from get_weather_indices output as a fallback."""
+    indices: list[dict] = []
+    city = ""
+    data_source = ""
+    for item in trace:
+        if item.get("tool") != "get_weather_indices":
+            continue
+        result = str(item.get("result") or "")
+        for line in result.splitlines():
+            if line.startswith("数据源："):
+                data_source = line.removeprefix("数据源：").strip()
+            elif line.startswith("城市："):
+                city = re.sub(r"（.*?）", "", line.removeprefix("城市：")).strip()
+            elif re.match(r"^\d+\.\s+", line):
+                text = re.sub(r"^\d+\.\s+", "", line).strip()
+                parts = [part.strip() for part in text.split("｜") if part.strip()]
+                if not parts:
+                    continue
+                entry = {
+                    "city": city,
+                    "name": parts[0],
+                    "date": "",
+                    "level": "",
+                    "category": "",
+                    "text": "",
+                    "data_source": data_source or "和风天气",
+                }
+                for part in parts[1:]:
+                    if part.startswith("日期 "):
+                        entry["date"] = part.removeprefix("日期 ").strip()
+                    elif part.startswith("等级 "):
+                        entry["level"] = part.removeprefix("等级 ").strip()
+                    elif part.startswith("类别 "):
+                        entry["category"] = part.removeprefix("类别 ").strip()
+                    elif part.startswith("建议 "):
+                        entry["text"] = part.removeprefix("建议 ").strip()
+                indices.append(entry)
+    return indices
+
+
 def enrich_structured_data_from_trace(structured: dict | None, trace: list[dict]) -> dict | None:
     """Patch structured data with deterministic tool-result parsing when the LLM omits optional cards."""
     if not structured:
         return structured
+    indices = parse_weather_indices_from_trace(trace)
+    if indices and not structured.get("weather_indices"):
+        structured["weather_indices"] = indices
     hotels = parse_hotel_options_from_trace(trace)
     if hotels and not structured.get("hotel_options"):
         structured["hotel_options"] = hotels

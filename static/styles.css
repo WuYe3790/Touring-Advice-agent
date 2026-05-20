@@ -1027,6 +1027,14 @@ textarea {
   background: #f8fafc;
 }
 
+.weather-index-grid {
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+}
+
+.weather-index-card {
+  border-left-color: #0ea5e9;
+}
+
 /* Timeline */
 .timeline {
   display: grid;

@@ -157,6 +157,14 @@ def status():
             "amap_js_key_loaded": bool(os.getenv("AMAP_JS_API_KEY", "").strip()),
             "amap_js_security_loaded": bool(os.getenv("AMAP_JS_SECURITY_CODE", "").strip()),
             "qweather_key_loaded": bool(os.getenv("QWEATHER_API_KEY", "").strip()),
+            "qweather_jwt_loaded": bool(
+                os.getenv("QWEATHER_JWT_KEY_ID", "").strip()
+                and os.getenv("QWEATHER_JWT_PROJECT_ID", "").strip()
+                and (
+                    os.getenv("QWEATHER_JWT_PRIVATE_KEY", "").strip()
+                    or os.getenv("QWEATHER_JWT_PRIVATE_KEY_PATH", "").strip()
+                )
+            ),
             "qweather_host_loaded": bool(os.getenv("QWEATHER_API_HOST", "").strip()),
             "train_tools_available": is_train_tools_available(),
             "aviationstack_key_loaded": bool(os.getenv("AVIATIONSTACK_API_KEY", "").strip()),

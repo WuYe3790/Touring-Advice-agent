@@ -114,6 +114,11 @@ AMAP_JS_API_KEY=你的高德 JS API Key
 AMAP_JS_SECURITY_CODE=你的高德 JS API 安全密钥
 QWEATHER_API_KEY=你的和风天气 API Key
 QWEATHER_API_HOST=你的和风天气专属 API Host
+QWEATHER_JWT_KEY_ID=你的和风天气 JWT 凭据 ID
+QWEATHER_JWT_PROJECT_ID=你的和风天气项目 ID
+QWEATHER_JWT_PRIVATE_KEY_PATH=你的 Ed25519 私钥文件路径
+QWEATHER_JWT_PRIVATE_KEY=也可以直接填写 Ed25519 私钥内容，换行写成 \n
+QWEATHER_JWT_PUBLIC_KEY_SHA256=控制台显示的公钥 SHA-256，仅用于人工核对
 AVIATIONSTACK_API_KEY=你的 Aviationstack API Key
 LETSFG_SEARCH_TIMEOUT=600
 LETSFG_SEARCH_MODE=fast
@@ -126,7 +131,7 @@ RAPIDAPI_HOST=booking-com15.p.rapidapi.com
 
 - `.env` 包含真实密钥，不要提交到公开仓库。
 - DeepSeek 控制台没有请求记录时，先检查前端是否开启了“离线演示”。
-- 和风天气空气质量和天气预警接口可能需要账号权限，接口不可用时工具会降级，不会中断 Agent。
+- 和风天气优先使用 JWT 认证；JWT 缺失或失败时回退 API Key。空气质量已升级到 `airquality/v1/current/{lat}/{lon}`，天气预警已升级到 `weatheralert/v1/current/{lat}/{lon}`，旧版 v7 接口只作为兜底。
 - LetsFG 当前用于优先查询实时机票报价，本地搜索可能较慢，因此默认设置 600 秒超时，失败后自动回退到 Aviationstack。
 - Aviationstack 当前只用于航班时刻/状态回退查询，不提供真实机票价格。
 - Booking.com/RapidAPI 当前用于酒店价格参考，价格和库存以 Booking.com 确认页为准。
@@ -269,8 +274,9 @@ Agent 的最终回答末尾会输出 JSON，后端提取为 `structured_data`，
 | 工具 | 数据源 | 说明 |
 |---|---|---|
 | `get_weather_info` | 和风 > 高德 > Open-Meteo | 天气查询，含回退 |
-| `get_air_quality_info` | 和风 | 空气质量，权限不足时降级 |
-| `get_weather_alerts` | 和风 | 天气预警，权限不足时降级 |
+| `get_air_quality_info` | 和风 JWT/API Key | 空气质量 v1，旧版 v7 兜底 |
+| `get_weather_alerts` | 和风 JWT/API Key | 天气预警 v1，旧版 v7 兜底 |
+| `get_weather_indices` | 和风 JWT/API Key | 运动、穿衣、防晒、舒适度、交通等生活指数 |
 | `calculate_trip_budget` | 本地计算 | 预算估算 |
 | `get_transport_advice` | 高德 | 驾车路线、距离、耗时、过路费 |
 | `search_flight_options` | LetsFG > Aviationstack | 优先实时机票报价；超时或失败时回退航班时刻/状态 |
@@ -399,6 +405,10 @@ Get-CimInstance Win32_Process |
 - 新增 `LETSFG_SEARCH_TIMEOUT`、`LETSFG_SEARCH_MODE`、`LETSFG_MAX_BROWSERS` 配置项。
 - 更新 Agent 提示词：用户只询问航班/机票时，优先只回答航班和票价相关内容，不扩展成完整旅行规划。
 - 清理 LetsFG 测试产生的本地浏览器缓存目录，避免无关文件进入项目。
+- 增加和风天气 JWT 认证支持：`Authorization: Bearer <JWT>` 优先，API Key 保留为回退。
+- 空气质量查询升级到和风 `airquality/v1/current/{latitude}/{longitude}` 新接口；旧版 `/v7/air/now` 只在新接口失败时作为兜底。
+- 天气预警查询升级到和风 `weatheralert/v1/current/{latitude}/{longitude}` 新接口；旧版 `/v7/warning/now` 只在新接口失败时作为兜底。
+- 新增天气生活指数工具 `get_weather_indices`，接入和风 `/v7/indices/1d`，前端新增“天气指数”卡片。
 
 ## 后续优化路线
 

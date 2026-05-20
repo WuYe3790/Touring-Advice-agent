@@ -8,6 +8,7 @@ import subprocess
 import sys
 from datetime import datetime, timedelta
 
+import jwt
 import requests
 from dotenv import load_dotenv
 from langchain_core.tools import tool
@@ -40,6 +41,7 @@ AMAP_BASE_URL = "https://restapi.amap.com/v3"
 # Aviationstack free-tier keys commonly reject HTTPS with HTTP 403.
 AVIATIONSTACK_BASE_URL = "http://api.aviationstack.com/v1"
 RAPIDAPI_BOOKING_HOST = "booking-com15.p.rapidapi.com"
+_QWEATHER_JWT_CACHE: dict[str, object] = {"token": "", "exp": 0}
 COORDINATE_RE = re.compile(r"^\s*(-?\d+(?:\.\d+)?)\s*,\s*(-?\d+(?:\.\d+)?)\s*$")
 AIRPORT_IATA_BY_CITY = {
     "北京": "PEK",
@@ -149,19 +151,96 @@ def _qweather_host() -> str:
     return _get_env_key("QWEATHER_API_HOST").removeprefix("https://").removeprefix("http://").strip("/")
 
 
+def _qweather_jwt_key_id() -> str:
+    return _get_env_key("QWEATHER_JWT_KEY_ID")
+
+
+def _qweather_jwt_project_id() -> str:
+    return _get_env_key("QWEATHER_JWT_PROJECT_ID")
+
+
+def _qweather_jwt_private_key() -> str:
+    private_key = _get_env_key("QWEATHER_JWT_PRIVATE_KEY")
+    if private_key:
+        return private_key.replace("\\n", "\n")
+    private_key_path = _get_env_key("QWEATHER_JWT_PRIVATE_KEY_PATH")
+    if private_key_path and os.path.exists(private_key_path):
+        with open(private_key_path, "r", encoding="utf-8") as file:
+            return file.read()
+    return ""
+
+
+def _qweather_jwt_token() -> str:
+    key_id = _qweather_jwt_key_id()
+    project_id = _qweather_jwt_project_id()
+    private_key = _qweather_jwt_private_key()
+    if not key_id or not project_id or not private_key:
+        return ""
+
+    now = int(time.time())
+    cached_token = str(_QWEATHER_JWT_CACHE.get("token") or "")
+    cached_exp = int(_QWEATHER_JWT_CACHE.get("exp") or 0)
+    if cached_token and cached_exp - now > 60:
+        return cached_token
+
+    iat = now - 30
+    exp = iat + 900
+    token = jwt.encode(
+        {"sub": project_id, "iat": iat, "exp": exp},
+        private_key,
+        algorithm="EdDSA",
+        headers={"alg": "EdDSA", "kid": key_id, "typ": "JWT"},
+    )
+    _QWEATHER_JWT_CACHE.update({"token": token, "exp": exp})
+    return token
+
+
+def _qweather_header_candidates() -> list[tuple[str, dict[str, str]]]:
+    candidates: list[tuple[str, dict[str, str]]] = []
+    try:
+        token = _qweather_jwt_token()
+        if token:
+            candidates.append(("和风天气 JWT", {"Authorization": f"Bearer {token}"}))
+    except Exception as exc:
+        print(f"和风天气 JWT 生成失败，将尝试 API Key：{exc}")
+    api_key = _qweather_key()
+    if api_key:
+        candidates.append(("和风天气 API Key", {"X-QW-Api-Key": api_key}))
+    return candidates
+
+
 def _qweather_headers() -> dict[str, str]:
-    return {"X-QW-Api-Key": _qweather_key()}
+    candidates = _qweather_header_candidates()
+    return candidates[0][1] if candidates else {}
+
+
+def _qweather_request_json(url: str, params: dict[str, object] | None = None, timeout: int = 10) -> tuple[dict, str]:
+    candidates = _qweather_header_candidates()
+    if not candidates:
+        raise RuntimeError("未配置和风天气 JWT 或 API Key。")
+
+    last_exc: Exception | None = None
+    for source, headers in candidates:
+        try:
+            return _request_json(url, params or {}, timeout=timeout, headers=headers), source
+        except requests.HTTPError as exc:
+            last_exc = exc
+            status_code = exc.response.status_code if exc.response is not None else None
+            if status_code in {401, 403}:
+                continue
+            raise
+    if last_exc:
+        raise last_exc
+    raise RuntimeError("和风天气认证失败。")
 
 
 def _qweather_lookup(city: str) -> dict | None:
-    qweather_key = _qweather_key()
     qweather_host = _qweather_host()
-    if not qweather_key or not qweather_host:
+    if not qweather_host or not _qweather_header_candidates():
         return None
-    geo_data = _request_json(
+    geo_data, _ = _qweather_request_json(
         f"https://{qweather_host}/geo/v2/city/lookup",
         {"location": city, "lang": "zh"},
-        headers=_qweather_headers(),
     )
     locations = geo_data.get("location") or []
     return locations[0] if locations else None
@@ -722,16 +801,14 @@ def get_weather_info(city: str, date: str = DEFAULT_DATE) -> str:
                     city_name = location.get("name", city)
                     adm1 = location.get("adm1", "")
                     adm2 = location.get("adm2", "")
-                    now_data = _request_json(
+                    now_data, weather_source = _qweather_request_json(
                         f"https://{qweather_host}/v7/weather/now",
                         {"location": location_id, "lang": "zh", "unit": "m"},
-                        headers=_qweather_headers(),
                     )
                     now = now_data.get("now") or {}
-                    daily_data = _request_json(
+                    daily_data, _ = _qweather_request_json(
                         f"https://{qweather_host}/v7/weather/3d",
                         {"location": location_id, "lang": "zh", "unit": "m"},
-                        headers=_qweather_headers(),
                     )
                     daily_items = daily_data.get("daily") or []
                     daily = next((item for item in daily_items if item.get("fxDate") == date), None)
@@ -739,7 +816,7 @@ def get_weather_info(city: str, date: str = DEFAULT_DATE) -> str:
                         daily = daily_items[0]
 
                     result = (
-                        f"数据源：和风天气\n"
+                        f"数据源：{weather_source}\n"
                         f"城市：{city_name}（{adm1}{adm2}）\n"
                         f"行程日期：{date}\n"
                         f"实时温度：{now.get('temp', '未知')}℃\n"
@@ -860,30 +937,87 @@ def get_air_quality_info(city: str) -> str:
             _log_tool_end("get_air_quality_info", start, result)
             return result
 
-        air_data = _request_json(
-            f"https://{qweather_host}/v7/air/now",
-            {"location": location["id"], "lang": "zh"},
-            headers=_qweather_headers(),
-        )
-        now = air_data.get("now") or {}
-        if not now:
-            result = f"空气质量查询失败：和风天气未返回 {city} 的空气质量数据。"
+        lat = _poi_scalar(location.get("lat"), "")
+        lon = _poi_scalar(location.get("lon"), "")
+        if not lat or not lon:
+            result = f"空气质量查询失败：和风天气未返回 {city} 的经纬度。"
             _log_tool_end("get_air_quality_info", start, result)
             return result
 
-        result = (
-            "数据源：和风天气空气质量\n"
-            f"城市：{location.get('name', city)}（{location.get('adm1', '')}{location.get('adm2', '')}）\n"
-            f"AQI：{now.get('aqi', '未知')}\n"
-            f"空气质量等级：{now.get('category', '未知')}\n"
-            f"首要污染物：{now.get('primary', '无或未知')}\n"
-            f"PM2.5：{now.get('pm2p5', '未知')} μg/m³\n"
-            f"PM10：{now.get('pm10', '未知')} μg/m³\n"
-            f"NO2：{now.get('no2', '未知')} μg/m³\n"
-            f"SO2：{now.get('so2', '未知')} μg/m³\n"
-            f"O3：{now.get('o3', '未知')} μg/m³\n"
-            f"CO：{now.get('co', '未知')} mg/m³"
-        )
+        try:
+            air_data, air_source = _qweather_request_json(
+                f"https://{qweather_host}/airquality/v1/current/{lat}/{lon}",
+                {"lang": "zh"},
+            )
+            indexes = air_data.get("indexes") or []
+            index = indexes[0] if indexes else {}
+            pollutants = air_data.get("pollutants") or []
+            pollutant_map = {
+                str(item.get("code", "")).lower(): item
+                for item in pollutants
+                if item.get("code")
+            }
+            primary = index.get("primaryPollutant") or {}
+            health = index.get("health") or {}
+            lines = [
+                f"数据源：{air_source} 空气质量 v1",
+                f"城市：{location.get('name', city)}（{location.get('adm1', '')}{location.get('adm2', '')}）",
+                f"AQI：{index.get('aqiDisplay', index.get('aqi', '未知'))}",
+                f"空气质量等级：{index.get('category', '未知')}",
+                f"首要污染物：{primary.get('name') or primary.get('fullName') or '无或未知'}",
+            ]
+            if health:
+                advice = health.get("advice", "未知")
+                if isinstance(advice, dict):
+                    advice = "；".join(
+                        str(value)
+                        for value in advice.values()
+                        if value
+                    ) or "未知"
+                lines.append(f"健康影响：{health.get('effect', '未知')}")
+                lines.append(f"健康建议：{advice}")
+
+            for code, label in [
+                ("pm2p5", "PM2.5"),
+                ("pm10", "PM10"),
+                ("no2", "NO2"),
+                ("so2", "SO2"),
+                ("o3", "O3"),
+                ("co", "CO"),
+            ]:
+                item = pollutant_map.get(code)
+                if item:
+                    concentration = item.get("concentration") or {}
+                    value = concentration.get("value", "未知")
+                    unit = concentration.get("unit", "")
+                    normalized_unit = str(unit or "").replace("µ", "u").replace("μ", "u").replace("³", "3")
+                    lines.append(f"{label}：{value} {normalized_unit}".strip())
+            result = "\n".join(lines)
+        except Exception as new_air_exc:
+            print(f"和风空气质量 v1 查询失败，尝试旧版 v7：{new_air_exc}")
+            air_data, air_source = _qweather_request_json(
+                f"https://{qweather_host}/v7/air/now",
+                {"location": location["id"], "lang": "zh"},
+            )
+            now = air_data.get("now") or {}
+            if not now:
+                result = f"空气质量查询失败：和风天气未返回 {city} 的空气质量数据。"
+                _log_tool_end("get_air_quality_info", start, result)
+                return result
+
+            result = (
+                f"数据源：{air_source} 空气质量 v7（旧版接口）\n"
+                f"城市：{location.get('name', city)}（{location.get('adm1', '')}{location.get('adm2', '')}）\n"
+                f"AQI：{now.get('aqi', '未知')}\n"
+                f"空气质量等级：{now.get('category', '未知')}\n"
+                f"首要污染物：{now.get('primary', '无或未知')}\n"
+                f"PM2.5：{now.get('pm2p5', '未知')} ug/m3\n"
+                f"PM10：{now.get('pm10', '未知')} ug/m3\n"
+                f"NO2：{now.get('no2', '未知')} ug/m3\n"
+                f"SO2：{now.get('so2', '未知')} ug/m3\n"
+                f"O3：{now.get('o3', '未知')} ug/m3\n"
+                f"CO：{now.get('co', '未知')} mg/m3"
+            )
         _log_tool_end("get_air_quality_info", start, result)
         return result
     except requests.HTTPError as exc:
@@ -916,15 +1050,32 @@ def get_weather_alerts(city: str) -> str:
             _log_tool_end("get_weather_alerts", start, result)
             return result
 
-        warning_data = _request_json(
-            f"https://{qweather_host}/v7/warning/now",
-            {"location": location["id"], "lang": "zh"},
-            headers=_qweather_headers(),
-        )
-        warnings = warning_data.get("warning") or []
+        lat = _poi_scalar(location.get("lat"), "")
+        lon = _poi_scalar(location.get("lon"), "")
+        if not lat or not lon:
+            result = f"天气预警查询失败：和风天气未返回 {city} 的经纬度。"
+            _log_tool_end("get_weather_alerts", start, result)
+            return result
+
+        try:
+            warning_data, warning_source = _qweather_request_json(
+                f"https://{qweather_host}/weatheralert/v1/current/{lat}/{lon}",
+                {"lang": "zh"},
+            )
+            warnings = warning_data.get("alerts") or []
+            alert_source_note = "天气预警 v1"
+        except Exception as new_warning_exc:
+            print(f"和风天气预警 v1 查询失败，尝试旧版 v7：{new_warning_exc}")
+            warning_data, warning_source = _qweather_request_json(
+                f"https://{qweather_host}/v7/warning/now",
+                {"location": location["id"], "lang": "zh"},
+            )
+            warnings = warning_data.get("warning") or []
+            alert_source_note = "灾害预警 v7（旧版接口）"
+
         if not warnings:
             result = (
-                "数据源：和风天气灾害预警\n"
+                f"数据源：{warning_source} {alert_source_note}\n"
                 f"城市：{location.get('name', city)}（{location.get('adm1', '')}{location.get('adm2', '')}）\n"
                 "当前无正在生效的天气灾害预警。"
             )
@@ -932,16 +1083,46 @@ def get_weather_alerts(city: str) -> str:
             return result
 
         lines = [
-            "数据源：和风天气灾害预警",
+            f"数据源：{warning_source} {alert_source_note}",
             f"城市：{location.get('name', city)}（{location.get('adm1', '')}{location.get('adm2', '')}）",
         ]
         for index, warning in enumerate(warnings[:5], start=1):
+            title = _first_non_empty(
+                warning.get("title"),
+                warning.get("headline"),
+                warning.get("event"),
+                default="未知预警",
+            )
+            severity = _first_non_empty(
+                warning.get("severityColor"),
+                warning.get("severity"),
+                warning.get("level"),
+                default="未知",
+            )
+            type_name = _first_non_empty(
+                warning.get("typeName"),
+                warning.get("type"),
+                warning.get("eventType"),
+                default="未知",
+            )
+            pub_time = _first_non_empty(
+                warning.get("pubTime"),
+                warning.get("effective"),
+                warning.get("startTime"),
+                default="未知",
+            )
+            description = _first_non_empty(
+                warning.get("text"),
+                warning.get("description"),
+                warning.get("instruction"),
+                default="无详细说明",
+            )
             lines.append(
-                f"{index}. {warning.get('title', '未知预警')}；"
-                f"等级：{warning.get('severityColor', warning.get('severity', '未知'))}；"
-                f"类型：{warning.get('typeName', '未知')}；"
-                f"发布时间：{warning.get('pubTime', '未知')}；"
-                f"说明：{warning.get('text', '无详细说明')}"
+                f"{index}. {title}；"
+                f"等级：{severity}；"
+                f"类型：{type_name}；"
+                f"发布时间：{pub_time}；"
+                f"说明：{description}"
             )
         result = "\n".join(lines)
         _log_tool_end("get_weather_alerts", start, result)
@@ -957,6 +1138,68 @@ def get_weather_alerts(city: str) -> str:
     except Exception as exc:
         result = f"天气预警查询暂不可用：{exc}"
         _log_tool_end("get_weather_alerts", start, result)
+        return result
+
+
+@tool
+def get_weather_indices(city: str, types: str = "1,3,5,8,9,10,15,16") -> str:
+    """查询和风天气生活指数，用于穿衣、防晒、运动、舒适度、交通等出行体验判断。
+
+    Args:
+        city: 城市名称，例如 "宁波"、"杭州"、"北京"。
+        types: 指数类型，逗号分隔。常用：1运动，3穿衣，5紫外线，8舒适度，9感冒，10空气污染扩散，15交通，16防晒。
+    """
+    start = _log_tool_start("get_weather_indices", city=city, types=types)
+    try:
+        qweather_host = _qweather_host()
+        location = _qweather_lookup(city)
+        if not qweather_host or not location:
+            result = "天气指数查询不可用：未配置和风天气 Key/Host/JWT，或未找到城市。"
+            _log_tool_end("get_weather_indices", start, result)
+            return result
+
+        requested_types = ",".join(
+            part.strip()
+            for part in str(types or "").split(",")
+            if part.strip().isdigit()
+        ) or "1,3,5,8,9,10,15,16"
+        indices_data, indices_source = _qweather_request_json(
+            f"https://{qweather_host}/v7/indices/1d",
+            {"type": requested_types, "location": location["id"], "lang": "zh"},
+        )
+        daily = indices_data.get("daily") or []
+        if not daily:
+            result = f"天气指数查询失败：和风天气未返回 {city} 的生活指数数据。"
+            _log_tool_end("get_weather_indices", start, result)
+            return result
+
+        lines = [
+            f"数据源：{indices_source} 天气指数",
+            f"城市：{location.get('name', city)}（{location.get('adm1', '')}{location.get('adm2', '')}）",
+            f"更新时间：{indices_data.get('updateTime', '未知')}",
+        ]
+        for index, item in enumerate(daily[:12], start=1):
+            lines.append(
+                f"{index}. {item.get('name', '未知指数')}｜"
+                f"日期 {item.get('date', '未知')}｜"
+                f"等级 {item.get('level', '未知')}｜"
+                f"类别 {item.get('category', '未知')}｜"
+                f"建议 {item.get('text', '无详细建议')}"
+            )
+        result = "\n".join(lines)
+        _log_tool_end("get_weather_indices", start, result)
+        return result
+    except requests.HTTPError as exc:
+        status_code = exc.response.status_code if exc.response is not None else ""
+        if status_code in {401, 403}:
+            result = "天气指数查询暂不可用：当前和风天气认证或账号权限不可用。"
+        else:
+            result = f"天气指数查询暂不可用：HTTP {status_code or '未知'}。"
+        _log_tool_end("get_weather_indices", start, result)
+        return result
+    except Exception as exc:
+        result = f"天气指数查询暂不可用：{exc}"
+        _log_tool_end("get_weather_indices", start, result)
         return result
 
 
@@ -1877,6 +2120,7 @@ TRAVEL_TOOLS = [
     get_weather_info,
     get_air_quality_info,
     get_weather_alerts,
+    get_weather_indices,
     calculate_trip_budget,
     get_transport_advice,
     search_flight_options,
