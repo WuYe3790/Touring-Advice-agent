@@ -1,7 +1,12 @@
 from __future__ import annotations
 
-from langchain_core.tools import tool
+import json
+import re
 
+from langchain_core.tools import tool
+from langchain_openai import ChatOpenAI
+
+from travel_agent.config import load_llm_config
 from travel_agent.tool_clients import _rapidapi_headers, _rapidapi_host, _rapidapi_key, _request_json
 from travel_agent.tool_data import HOTEL_CITY_ALIASES
 from travel_agent.tool_formatters import (
@@ -9,6 +14,7 @@ from travel_agent.tool_formatters import (
     _format_money,
     _log_tool_end,
     _log_tool_start,
+    _normalize_price_display,
 )
 
 
@@ -46,6 +52,45 @@ def _booking_destination_id(destination: dict) -> tuple[str, str]:
     else:
         search_type = "CITY"
     return str(dest_id or ""), search_type
+
+
+def _translate_hotel_names(names: list[str]) -> dict[str, str]:
+    """使用 LLM 将酒店英文名批量翻译为中文官方名称。"""
+    if not names:
+        return {}
+    unique = list(dict.fromkeys(names))
+    try:
+        config = load_llm_config()
+        if not config.api_key:
+            return {}
+        llm = ChatOpenAI(
+            model=config.model,
+            api_key=config.api_key,
+            base_url=config.base_url,
+            temperature=0.1,
+            timeout=min(config.timeout, 15),
+            extra_body={"thinking": {"type": "disabled"}},
+        )
+        prompt = (
+            "将以下酒店名称翻译为中文官方名称。对于知名国际连锁酒店（如Hilton、Marriott、Sheraton、Hyatt等），"
+            "请使用其官方中文品牌名。返回一个 JSON 对象，键为英文原名，值为中文译名。"
+            "只返回 JSON，不要其他内容。\n\n"
+            f"酒店名称列表：\n{json.dumps(unique, ensure_ascii=False)}\n\n"
+            '示例输出格式：{"Grand Hyatt Hangzhou": "杭州君悦酒店", "Hilton Hangzhou": "杭州希尔顿酒店"}'
+        )
+        response = llm.invoke(prompt)
+        text = response.content if hasattr(response, 'content') else str(response)
+        json_match = re.search(r"\{[^{}]*\}", text, re.DOTALL)
+        if json_match:
+            result = json.loads(json_match.group())
+            if isinstance(result, dict):
+                return result
+        result = json.loads(text.strip())
+        if isinstance(result, dict):
+            return result
+    except Exception as exc:
+        print(f"酒店名称翻译失败，保留英文名：{exc}")
+    return {name: name for name in unique}
 
 
 @tool
@@ -123,19 +168,43 @@ def search_hotel_prices(
             _log_tool_end("search_hotel_prices", start, result)
             return result
 
-        destination_name = _first_non_empty(destination.get("name"), city)
+        # 收集所有需要翻译的英文文本（名称、区域、地址、目的地）
+        texts_to_translate: list[str] = []
+        for entry in hotels[:safe_limit]:
+            prop = entry.get("property") or {}
+            for key in ("name", "wishlistName", "address"):
+                value = str(prop.get(key) or "").strip()
+                if value and not value.isdigit():
+                    texts_to_translate.append(value)
+        dest_name_raw = _first_non_empty(destination.get("name"), "")
+        if dest_name_raw and dest_name_raw != city:
+            texts_to_translate.append(dest_name_raw)
+        trans_map = _translate_hotel_names(texts_to_translate)
+
+        def _tr(text: str) -> str:
+            """从翻译映射中查找中文名，未找到则返回原文。"""
+            return trans_map.get(text, text)
+
+        destination_name = _tr(dest_name_raw) if dest_name_raw else city
+        if not destination_name or destination_name == dest_name_raw:
+            destination_name = _tr(_first_non_empty(destination.get("name"), city))
+
         lines = [
             "数据源：Booking.com via RapidAPI",
             f"查询目的地：{destination_name}（dest_id={dest_id}, search_type={search_type}）",
             f"入住/离店：{checkin_date} → {checkout_date}；成人 {max(1, int(adults))}；房间 {max(1, int(rooms))}",
             "说明：价格为接口返回的实时参考总价，库存、税费和最终支付价以 Booking.com 页面为准。",
+            "⚠️ 重要提示：以下酒店名称、区域和目的地已翻译为中文。请在后续文字描述和结构化卡片中【只使用中文名称】，不要出现英文原名或中英文混用。",
             "酒店价格结果：",
         ]
         for index, entry in enumerate(hotels[:safe_limit], start=1):
             prop = entry.get("property") or {}
+            hotel_name = _tr(prop.get("name", "")) or "未知酒店"
+            area = _tr(prop.get("wishlistName") or "") or _tr(prop.get("address") or "") or destination_name
             price = ((prop.get("priceBreakdown") or {}).get("grossPrice") or {})
             hotel_currency = _first_non_empty(price.get("currency"), currency, default=currency)
             total_price = _format_money(price.get("value"), hotel_currency)
+            total_price = _normalize_price_display(total_price)
             review = _first_non_empty(prop.get("reviewScore"), default="暂无评分")
             review_count = _first_non_empty(prop.get("reviewCount"), default="暂无评论数")
             review_word = _first_non_empty(prop.get("reviewScoreWord"), default="")
@@ -158,8 +227,7 @@ def search_hotel_prices(
                 f"照片 {photo_url}" if photo_url else "",
             ]
             lines.append(
-                f"{index}. {prop.get('name', '未知酒店')}｜"
-                f"{prop.get('wishlistName') or prop.get('address') or destination_name}｜"
+                f"{index}. {hotel_name}｜{area}｜"
                 f"总价 {total_price}｜"
                 + "｜".join(part for part in optional_parts if part)
             )

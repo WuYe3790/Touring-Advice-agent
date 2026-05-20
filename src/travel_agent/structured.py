@@ -176,11 +176,20 @@ def enrich_structured_data_from_trace(structured: dict | None, trace: list[dict]
             for hotel in hotels
             if hotel.get("name")
         }
-        for hotel in structured.get("hotel_options") or []:
+        struct_list = structured.get("hotel_options") or []
+        for idx, hotel in enumerate(struct_list):
             key = re.sub(r"\s+", "", str(hotel.get("name") or "")).lower()
             trace_hotel = trace_by_name.get(key)
+            # 名称匹配失败时，按位置兜底
+            if not trace_hotel and idx < len(hotels):
+                trace_hotel = hotels[idx]
             if not trace_hotel:
                 continue
+            # 始终用 trace 中的中文名称覆盖，确保卡片不出现英文名
+            if trace_hotel.get("name"):
+                hotel["name"] = trace_hotel["name"]
+            if trace_hotel.get("area"):
+                hotel["area"] = trace_hotel["area"]
             for field in (
                 "photo_url",
                 "location",
