@@ -73,6 +73,7 @@ def parse_hotel_options_from_trace(trace: list[dict]) -> list[dict]:
         if item.get("tool") != "search_hotel_prices":
             continue
         result = str(item.get("result") or "")
+        is_amap_fallback = "高德地图酒店 POI" in result or "无实时房价" in result
         for line in result.splitlines():
             if not re.match(r"^\d+\.\s+", line):
                 continue
@@ -92,8 +93,8 @@ def parse_hotel_options_from_trace(trace: list[dict]) -> list[dict]:
                 "checkout": "",
                 "location": "",
                 "photo_url": "",
-                "data_source": "Booking.com/RapidAPI",
-                "notes": "价格为接口返回参考值，最终以 Booking.com 确认页为准。",
+                "data_source": "高德地图酒店 POI" if is_amap_fallback else "Booking.com/RapidAPI",
+                "notes": "RapidAPI 不可用时的酒店位置参考，不含实时房价或库存。" if is_amap_fallback else "价格为接口返回参考值，最终以 Booking.com 确认页为准。",
             }
             for part in parts[2:]:
                 if part.startswith("总价 "):
@@ -115,6 +116,8 @@ def parse_hotel_options_from_trace(trace: list[dict]) -> list[dict]:
                     hotel["checkout"] = part.removeprefix("离店 ").strip()
                 elif part.startswith("照片 "):
                     hotel["photo_url"] = part.removeprefix("照片 ").strip()
+                elif part.startswith("说明 "):
+                    hotel["notes"] = part.removeprefix("说明 ").strip()
             hotels.append(hotel)
     return hotels
 
@@ -217,4 +220,3 @@ def strip_structured_json(text: str) -> str:
     for start, end, _content in reversed(fences):
         result = result[:start] + result[end:]
     return result.strip()
-

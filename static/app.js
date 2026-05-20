@@ -1130,7 +1130,7 @@ const TRACE_TOOL_INFO = {
   get_air_quality_info: { label: "空气", title: "查询空气质量", desc: "判断户外活动、骑行和老人儿童出行风险。" },
   get_weather_alerts: { label: "预警", title: "查询天气预警", desc: "检查暴雨、大风、高温等灾害预警。" },
   calculate_trip_budget: { label: "预算", title: "计算预算", desc: "按人数、天数、住宿、餐饮和门票估算费用。" },
-  search_hotel_prices: { label: "酒店", title: "查询酒店价格", desc: "通过 Booking.com/RapidAPI 查询真实酒店价格参考。" },
+  search_hotel_prices: { label: "酒店", title: "查询酒店/住宿参考", desc: "优先查询 Booking.com/RapidAPI 实时价格，失败时回退高德酒店 POI。" },
   get_transport_advice: { label: "驾车", title: "规划驾车路线", desc: "查询驾车距离、耗时和过路费参考。" },
   search_flight_options: { label: "航班", title: "查询航班", desc: "查询航班时刻、机场、航站楼和状态。" },
   get_public_transit_plan: { label: "公交", title: "规划公交/地铁", desc: "查询市内公共交通换乘方案。" },
@@ -2184,8 +2184,15 @@ function renderDataCredibility(data) {
     if ((category.items || []).length) sources.set("高德地图", "POI 地点推荐");
   });
   if ((data.hotel_options || []).length) {
-    sources.set("Booking.com/RapidAPI", "酒店价格");
-    limits.push("酒店价格为实时接口参考值，库存、税费和最终支付价以 Booking.com 确认页为准。");
+    const hotelSourceText = (data.hotel_options || []).map((item) => `${item.data_source || ""} ${item.notes || ""}`).join(" ");
+    if (/高德地图|POI|无实时房价|实时价格不可用/.test(hotelSourceText)) {
+      sources.set("高德地图酒店 POI", "酒店位置参考");
+      limits.push("酒店卡片为高德地图 POI 兜底结果时，不包含实时房价、库存或可订状态。");
+    }
+    if (/Booking\.com|RapidAPI/i.test(hotelSourceText) || !/高德地图|POI/.test(hotelSourceText)) {
+      sources.set("Booking.com/RapidAPI", "酒店价格");
+      limits.push("酒店价格为实时接口参考值，库存、税费和最终支付价以 Booking.com 确认页为准。");
+    }
   }
   if (data.budget && typeof data.budget.total === "number") {
     sources.set("本地预算计算", "预算估算");

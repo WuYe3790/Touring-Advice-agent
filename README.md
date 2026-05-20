@@ -137,6 +137,7 @@ RAPIDAPI_HOST=booking-com15.p.rapidapi.com
 - LetsFG 默认使用 3 个本地浏览器槽，并优先查询直飞报价（`LETSFG_MAX_STOPOVERS=0`）；如需中转机票，可改为 `1` 或 `2`。
 - Aviationstack 当前只用于航班时刻/状态回退查询，不提供真实机票价格。
 - Booking.com/RapidAPI 当前用于酒店价格参考，价格和库存以 Booking.com 确认页为准。
+- 如果 RapidAPI 免费额度用尽或接口限流，`search_hotel_prices` 会自动降级为高德地图酒店 POI 参考：只展示酒店位置、评分、联系方式等信息，不包含实时房价和库存。
 - 12306 工具需要本机 Node.js / npx，首次调用可能较慢。
 - LetsFG 本地搜索依赖 Playwright Chromium；首次安装依赖后可执行 `C:\Users\BaoXinJie\anaconda3\python.exe -m playwright install chromium`。
 
@@ -457,6 +458,7 @@ Get-CimInstance Win32_Process |
 - 新增 `travel_agent.tool_maps`，把高德地点解析、坐标归一化、路线点解析、地图链接生成等地图基础能力从工具入口中拆出。
 - 新增 `travel_agent.tool_weather`，把天气、空气质量、天气预警、生活指数四个天气工具从 `tools.py` 中拆出。
 - 新增 `travel_agent.tool_transport`，把驾车、公交/地铁、步行、骑行、距离矩阵、实时路况六个交通工具从 `tools.py` 中拆出。
+- 优化酒店查询降级策略：RapidAPI 未配置、免费额度用尽、限流或接口异常时，`search_hotel_prices` 自动回退高德地图酒店 POI，继续提供住宿位置参考，并明确标注“不含实时房价”。
 - 清理前端 `static/app.js` 中被后续实现覆盖的重复函数定义，避免维护时误改旧版 `renderTrace`、`requestChatStream`、`appendMeta`、`setBusy` 等无效逻辑。
 
 ## 接手指南

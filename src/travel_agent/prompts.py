@@ -86,7 +86,7 @@ REAL_DATA_TOOL_PROMPT = """
 12. search_nearby_pois 可用高德地图围绕某个景点、车站或酒店查询周边餐饮、住宿、咖啡、地铁站等 POI。
 13. get_place_location 可用高德地图核验地点地址和经纬度。
 14. get_map_marker_link 可生成不暴露 API Key 的高德地图地点标记链接，适合放入 POI 或注意事项。
-15. search_hotel_prices 可用 Booking.com RapidAPI 查询真实酒店价格，适合住宿推荐、酒店价格对比和预算估算；价格为接口返回的实时参考价，最终库存/税费/支付价以 Booking.com 为准。
+15. search_hotel_prices 优先用 Booking.com RapidAPI 查询真实酒店价格，适合住宿推荐、酒店价格对比和预算估算；当 RapidAPI 未配置、额度用尽或接口异常时，工具会自动回退到高德地图酒店 POI，只提供酒店位置/评分/联系方式参考，不包含实时房价和库存。
 16. search_train_tickets 可用 12306 查询真实火车票余票（高铁/动车/普速），支持按车型筛选和数量限制。
 17. search_interline_train_tickets 可用 12306 查询中转余票方案，适合直达车次少、不合适或用户明确接受中转时调用。
 18. get_train_route 可用 12306 查询特定车次的经停站和时刻表。
@@ -96,8 +96,8 @@ REAL_DATA_TOOL_PROMPT = """
 - 当用户只是要求查某一种信息时，严格选择对应工具并窄回答：查航班只调用 search_flight_options；查高铁/火车只调用 search_train_tickets 或 search_interline_train_tickets；查天气只调用天气工具；查市内换乘只调用 get_public_transit_plan/步行/骑行等路线工具；查地点或周边只调用地点/POI 工具。不要因为识别出了城市就自动查询天气、景点、预算或完整日程。
 - 单点查询的正文不要输出完整规划模板，不要包含“每日行程”“住宿建议”“预算分析”“景点推荐”等无关小节；只给结果、数据来源和必要限制说明。JSON 中也只填相关字段，例如航班查询只填 transport_options 和 tips；周边餐饮只填 poi_recommendations 和 tips；天气查询只填 weather/weather_alerts/weather_indices 和 tips。
 - 单点查询时，summary 用一句话概括查询结果；daily_itinerary 必须为 []；hotel_options 只有酒店查询才填写，否则为 []；budget 使用 {"total": 0, "breakdown": {}, "currency": "CNY", "notes": ""}；无关字段必须为空数组，不要为了卡片好看而填充。
-- 当用户请求具体目的地完整旅行规划时，除了天气和交通，优先调用 search_travel_pois 至少 3 次：分别搜索"景点"、"餐饮"或"本地菜"、"商圈"或"购物"。如果行程涉及住宿，应优先调用 search_hotel_prices 查询真实酒店价格；也可以补充 search_travel_pois 搜索"酒店"作为 POI/位置参考，但不要用高德酒店 POI 冒充真实房价。
-- 当用户询问"酒店/住宿/住哪里/酒店价格/附近酒店/多少钱一晚"时，调用 search_hotel_prices；如果用户给出城市、日期和人数，按用户参数查询；如果缺少入住/离店日期，在完整规划中可用行程日期推断，单点查询中应要求补充日期或使用默认明天/后天并明确说明。最终回答必须说明 Booking.com/RapidAPI 价格只是实时参考，最终以平台确认页为准。酒店结果必须写入 hotel_options。
+- 当用户请求具体目的地完整旅行规划时，除了天气和交通，优先调用 search_travel_pois 至少 3 次：分别搜索"景点"、"餐饮"或"本地菜"、"商圈"或"购物"。如果行程涉及住宿，应优先调用 search_hotel_prices；如果工具返回 Booking.com/RapidAPI 结果，可作为真实价格参考；如果工具返回高德地图酒店 POI 兜底结果，只能作为住宿位置参考，必须明确说明"当前无实时房价"，不要把它写成真实价格。
+- 当用户询问"酒店/住宿/住哪里/酒店价格/附近酒店/多少钱一晚"时，调用 search_hotel_prices；如果用户给出城市、日期和人数，按用户参数查询；如果缺少入住/离店日期，在完整规划中可用行程日期推断，单点查询中应要求补充日期或使用默认明天/后天并明确说明。最终回答必须区分数据来源：Booking.com/RapidAPI 价格只是实时参考，最终以平台确认页为准；高德地图酒店 POI 兜底结果没有实时房价，只能用于位置、评分和联系方式参考。酒店结果必须写入 hotel_options。
 - 当用户行程包含较多户外活动、老人儿童出行、骑行步行、海边/山地/恶劣天气风险，或用户询问是否适合出行/天气预警/穿什么/防晒/运动是否适合时，可调用 get_air_quality_info、get_weather_alerts 和 get_weather_indices，并把可用的空气质量写入 tips，把天气预警写入 weather_alerts，把生活指数写入 weather_indices；如果工具返回"暂不可用"，不要把它当作规划失败，只需忽略或简短说明。用户单独查询天气预警或天气指数时，只回答对应情况，不要扩展行程。
 - 当行程包含车站到酒店、酒店到景点、景点到景点等城市内移动时，优先调用 get_public_transit_plan 获取真实公交/地铁换乘参考，并按距离和用户偏好补充 get_walking_route 或 get_bicycling_route：1.5 公里内优先比较步行，1-8 公里可比较骑行，携带行李或天气不好时优先公共交通/网约车。若工具结果同时包含"地铁优先"和"公交备选"，最终回答中必须至少保留一个公交备选方案，不能只写地铁。
 - 当用户询问多个地点到同一目的地的远近、住宿区域选择、景点顺序或去车站/机场耗时时，调用 get_route_distance_matrix 做距离/耗时对比，不要凭感觉排序。
@@ -111,5 +111,5 @@ REAL_DATA_TOOL_PROMPT = """
 - 用户提到"高铁"时传 train_filter_flags="G"，提到"动车"时传"D"。将 search_train_tickets 返回的车次号、出发/到达时刻、座型余票、票价如实地写入 transport_options（每条一个方案：mode 为"高铁 G车次号"，duration 为历时，cost_estimate 为座型+票价）和 daily_itinerary 的交通步骤中。
 - 若 search_train_tickets 没有查到合适直达车，或用户提到"中转/换乘/怎么转车"，应调用 search_interline_train_tickets；不得自行编造中转车次。中转方案写入 transport_options 时 category 使用 "interline_train"，总方案写在外层，每一段车次写入 legs，并尽量包含换乘站、换乘等待时间、总耗时、各段票价/余票。
 - 当用户明确提到"飞机/航班/机场/机票/机票价格"时，应调用 search_flight_options。跨城距离较远（例如驾车超过约500公里、火车耗时较长、或目的地适合航空出行）时，也应把 search_flight_options 作为备选工具调用。航班工具参数优先传机场 IATA 三字码；若不确定，可传常见城市名，工具内置部分中国城市机场映射；若用户给出人数，把成人数传入 adults。若工具返回 LetsFG 结果，最终回答应展示票价、航司、出发/到达时间和数据限制；若工具返回 Aviationstack 回退结果，必须说明这是航班时刻/状态参考，不含真实票价。
-- 最终回答应说明关键数据来源，例如"天气和空气质量来自和风天气""地点和路线来自高德地图""酒店价格来自 Booking.com/RapidAPI""火车票来自12306""航班来自 Aviationstack"。
+- 最终回答应说明关键数据来源，例如"天气和空气质量来自和风天气""地点和路线来自高德地图""酒店价格来自 Booking.com/RapidAPI""酒店位置兜底参考来自高德地图 POI""火车票来自12306""航班来自 Aviationstack"。
 """

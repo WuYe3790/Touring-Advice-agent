@@ -3,11 +3,12 @@ from __future__ import annotations
 import json
 import re
 
+import requests
 from langchain_core.tools import tool
 from langchain_openai import ChatOpenAI
 
 from travel_agent.config import load_llm_config
-from travel_agent.tool_clients import _rapidapi_headers, _rapidapi_host, _rapidapi_key, _request_json
+from travel_agent.tool_clients import AMAP_BASE_URL, _amap_key, _rapidapi_headers, _rapidapi_host, _rapidapi_key, _request_json
 from travel_agent.tool_data import HOTEL_CITY_ALIASES
 from travel_agent.tool_formatters import (
     _first_non_empty,
@@ -15,6 +16,7 @@ from travel_agent.tool_formatters import (
     _log_tool_end,
     _log_tool_start,
     _normalize_price_display,
+    _poi_scalar,
 )
 
 
@@ -52,6 +54,115 @@ def _booking_destination_id(destination: dict) -> tuple[str, str]:
     else:
         search_type = "CITY"
     return str(dest_id or ""), search_type
+
+
+def _is_rapidapi_quota_error(text: object) -> bool:
+    lowered = str(text or "").lower()
+    quota_keywords = (
+        "quota",
+        "limit",
+        "monthly",
+        "exceeded",
+        "too many requests",
+        "rate limit",
+        "you have exceeded",
+        "用量",
+        "额度",
+        "配额",
+        "上限",
+        "次数",
+    )
+    return any(keyword in lowered for keyword in quota_keywords)
+
+
+def _format_amap_hotel_fallback(
+    city: str,
+    checkin_date: str,
+    checkout_date: str,
+    adults: int,
+    rooms: int,
+    limit: int,
+    reason: str,
+) -> str:
+    try:
+        adults_count = max(1, int(adults))
+    except (TypeError, ValueError):
+        adults_count = 2
+    try:
+        rooms_count = max(1, int(rooms))
+    except (TypeError, ValueError):
+        rooms_count = 1
+    key = _amap_key()
+    if not key:
+        return (
+            f"酒店价格查询不可用：{reason}\n"
+            "酒店位置参考也不可用：未配置 AMAP_API_KEY。\n"
+            "建议：请暂时按目的地核心商圈、地铁站或景区附近手动筛选住宿；当前无法返回实时房价。"
+        )
+
+    safe_limit = max(1, min(int(limit), 10))
+    try:
+        data = _request_json(
+            f"{AMAP_BASE_URL}/place/text",
+            {
+                "key": key,
+                "keywords": "酒店",
+                "city": city,
+                "citylimit": "true",
+                "offset": safe_limit,
+                "page": 1,
+                "extensions": "all",
+                "output": "JSON",
+            },
+            timeout=15,
+        )
+    except Exception as exc:
+        return (
+            f"酒店价格查询不可用：{reason}\n"
+            f"酒店位置参考查询也失败：{exc}\n"
+            "建议：请暂时按目的地核心商圈、地铁站或景区附近手动筛选住宿；当前无法返回实时房价。"
+        )
+
+    pois = data.get("pois") or []
+    if data.get("status") != "1" or not pois:
+        return (
+            f"酒店价格查询不可用：{reason}\n"
+            f"高德地图也未在“{city}”找到酒店 POI。"
+        )
+
+    lines = [
+        "数据源：高德地图酒店 POI（RapidAPI 不可用时的住宿位置参考）",
+        f"查询城市：{city}",
+        f"入住/离店：{checkin_date} → {checkout_date}；成人 {adults_count}；房间 {rooms_count}",
+        f"降级原因：{reason}",
+        "说明：当前无法获取 Booking.com/RapidAPI 实时房价。以下只提供酒店位置、评分、人均/参考消费等 POI 信息，不代表可订房价或库存。",
+        "酒店位置参考结果：",
+    ]
+    for index, poi in enumerate(pois[:safe_limit], start=1):
+        name = poi.get("name", "未知酒店")
+        address = _poi_scalar(poi.get("address"), city)
+        biz_ext = poi.get("biz_ext") or {}
+        rating = _poi_scalar(biz_ext.get("rating"), "暂无评分")
+        cost = _poi_scalar(biz_ext.get("cost"), "")
+        stars = _poi_scalar(biz_ext.get("star"), "")
+        location = _poi_scalar(poi.get("location"), "")
+        tel = _poi_scalar(poi.get("tel"), "")
+        photos = poi.get("photos") or []
+        photo_url = photos[0].get("url") if photos and isinstance(photos[0], dict) else ""
+        optional_parts = [
+            f"评分 {rating}" if rating != "暂无评分" else "",
+            f"人均 {cost}元" if cost else "",
+            f"星级 {stars}" if stars else "",
+            f"电话 {tel}" if tel else "",
+            f"坐标 {location}" if location else "",
+            f"照片 {photo_url}" if photo_url else "",
+            "说明 无实时房价，仅作住宿位置参考",
+        ]
+        lines.append(
+            f"{index}. {name}｜{address}｜总价 实时价格不可用｜"
+            + "｜".join(part for part in optional_parts if part)
+        )
+    return "\n".join(lines)
 
 
 def _translate_hotel_names(names: list[str]) -> dict[str, str]:
@@ -125,21 +236,45 @@ def search_hotel_prices(
         currency=currency,
     )
     if not _rapidapi_key():
-        result = "酒店价格查询不可用：未配置 RAPIDAPI_KEY。"
+        result = _format_amap_hotel_fallback(
+            city,
+            checkin_date,
+            checkout_date,
+            adults,
+            rooms,
+            limit,
+            "未配置 RAPIDAPI_KEY，无法查询 Booking.com 实时房价。",
+        )
         _log_tool_end("search_hotel_prices", start, result)
         return result
 
     try:
         destinations = _booking_search_destinations(city)
         if not destinations:
-            result = f"酒店价格查询失败：Booking.com 未找到“{city}”对应目的地。"
+            result = _format_amap_hotel_fallback(
+                city,
+                checkin_date,
+                checkout_date,
+                adults,
+                rooms,
+                limit,
+                f"Booking.com 未找到“{city}”对应目的地。",
+            )
             _log_tool_end("search_hotel_prices", start, result)
             return result
 
         destination = destinations[0]
         dest_id, search_type = _booking_destination_id(destination)
         if not dest_id:
-            result = f"酒店价格查询失败：未能取得“{city}”的 Booking.com 目的地 ID。"
+            result = _format_amap_hotel_fallback(
+                city,
+                checkin_date,
+                checkout_date,
+                adults,
+                rooms,
+                limit,
+                f"未能取得“{city}”的 Booking.com 目的地 ID。",
+            )
             _log_tool_end("search_hotel_prices", start, result)
             return result
 
@@ -161,9 +296,15 @@ def search_hotel_prices(
         )
         hotels = ((data.get("data") or {}).get("hotels") or []) if isinstance(data.get("data"), dict) else []
         if data.get("status") is False or not hotels:
-            result = (
-                f"酒店价格查询无结果：{city} {checkin_date} 至 {checkout_date}。"
-                f"RapidAPI 返回：{data.get('message', '无详细说明')}"
+            message = data.get("message", "无详细说明")
+            result = _format_amap_hotel_fallback(
+                city,
+                checkin_date,
+                checkout_date,
+                adults,
+                rooms,
+                limit,
+                f"Booking.com/RapidAPI 未返回可用酒店价格：{message}",
             )
             _log_tool_end("search_hotel_prices", start, result)
             return result
@@ -234,7 +375,34 @@ def search_hotel_prices(
         result = "\n".join(lines)
         _log_tool_end("search_hotel_prices", start, result)
         return result
+    except requests.HTTPError as exc:
+        status_code = exc.response.status_code if exc.response is not None else ""
+        body = exc.response.text if exc.response is not None else ""
+        if status_code in {402, 403, 429} or _is_rapidapi_quota_error(body):
+            reason = f"RapidAPI HTTP {status_code or '未知'}，疑似免费额度/频率上限已用尽。"
+        else:
+            reason = f"RapidAPI HTTP {status_code or '未知'}：{body[:160]}"
+        result = _format_amap_hotel_fallback(
+            city,
+            checkin_date,
+            checkout_date,
+            adults,
+            rooms,
+            limit,
+            reason,
+        )
+        _log_tool_end("search_hotel_prices", start, result)
+        return result
     except Exception as exc:
-        result = f"酒店价格查询异常：{exc}"
+        reason = f"酒店价格查询异常：{exc}"
+        result = _format_amap_hotel_fallback(
+            city,
+            checkin_date,
+            checkout_date,
+            adults,
+            rooms,
+            limit,
+            reason,
+        )
         _log_tool_end("search_hotel_prices", start, result)
         return result
