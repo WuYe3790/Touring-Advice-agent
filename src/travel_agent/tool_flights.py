@@ -5,16 +5,30 @@ import os
 import re
 import subprocess
 import sys
+from datetime import datetime, timedelta
 
-from travel_agent.tool_clients import _get_env_key
+import requests
+from langchain_core.tools import tool
+
+from travel_agent.tool_clients import (
+    AVIATIONSTACK_BASE_URL,
+    _aviationstack_key,
+    _get_env_key,
+    _request_json,
+)
 from travel_agent.tool_data import AIRPORT_IATA_BY_CITY
 from travel_agent.tool_formatters import (
     _first_non_empty,
+    _format_aviationstack_flights,
     _format_minutes,
     _format_money,
+    _log_tool_end,
+    _log_tool_start,
     _poi_scalar,
     _summarize_letsfg_error,
 )
+
+DEFAULT_DATE = (datetime.now() + timedelta(days=1)).strftime("%Y-%m-%d")
 
 
 def _normalize_airport_iata(value: str) -> str:
@@ -183,3 +197,123 @@ def _format_letsfg_offers(data: dict, dep_iata: str, arr_iata: str, limit: int) 
             + (f"｜{'；'.join(extras)}" if extras else "")
         )
     return "\n".join(lines)
+
+
+@tool
+def search_flight_options(
+    departure: str = "",
+    arrival: str = "",
+    date: str = "",
+    airline: str = "",
+    flight_number: str = "",
+    adults: int = 1,
+    limit: int = 8,
+) -> str:
+    """优先使用 LetsFG 查询实时机票报价，失败或超时后回退 Aviationstack 航班时刻/状态。
+
+    注意：LetsFG 本地实时搜索可能较慢；Aviationstack 只提供航班动态、机场、航空公司和计划/实际时刻信息，不提供机票价格。
+    Args:
+        departure: 出发机场 IATA 三字码或常见城市名，例如 "NGB"、"CGO"、"宁波"、"郑州"。
+        arrival: 到达机场 IATA 三字码或常见城市名，例如 "HGH"、"成都"、"北京"。
+        date: 可选，航班日期 YYYY-MM-DD。LetsFG 会按该日期搜索；Aviationstack 回退能力取决于账号套餐。
+        airline: 可选，航空公司 IATA 代码，例如 "MU"、"CA"。
+        flight_number: 可选，航班号数字部分，例如 MU2397 的 "2397"。
+        adults: 成人乘客数，默认 1。
+        limit: 返回结果数量，建议 3-10。
+    """
+    start = _log_tool_start(
+        "search_flight_options",
+        departure=departure,
+        arrival=arrival,
+        date=date,
+        airline=airline,
+        flight_number=flight_number,
+        adults=adults,
+        limit=limit,
+    )
+    dep_iata = _normalize_airport_iata(departure)
+    arr_iata = _normalize_airport_iata(arrival)
+    search_date = date or DEFAULT_DATE
+    try:
+        adults_count = max(1, min(int(adults), 9))
+    except (TypeError, ValueError):
+        adults_count = 1
+    letsfg_result = ""
+    if not airline and not flight_number:
+        letsfg_result, letsfg_ok = _search_letsfg_local(dep_iata, arr_iata, search_date, limit, adults=adults_count)
+        if letsfg_ok:
+            _log_tool_end("search_flight_options", start, letsfg_result)
+            return letsfg_result
+
+    key = _aviationstack_key()
+    if not key:
+        result = (
+            f"{letsfg_result}\n\n"
+            "Aviationstack 回退不可用：未配置 AVIATIONSTACK_API_KEY。"
+        ).strip()
+        _log_tool_end("search_flight_options", start, result)
+        return result
+
+    params: dict[str, object] = {
+        "access_key": key,
+        "limit": max(1, min(int(limit), 20)),
+    }
+    if dep_iata:
+        params["dep_iata"] = dep_iata
+    if arr_iata:
+        params["arr_iata"] = arr_iata
+    if search_date:
+        params["flight_date"] = search_date
+    if airline:
+        params["airline_iata"] = airline.strip().upper()
+    if flight_number:
+        params["flight_number"] = flight_number.strip().upper().removeprefix((airline or "").upper())
+
+    try:
+        data = _request_json(f"{AVIATIONSTACK_BASE_URL}/flights", params=params, timeout=15)
+        if data.get("error"):
+            error = data["error"]
+            result = f"航班查询失败：{error.get('code', 'unknown')} - {error.get('message', error)}"
+            _log_tool_end("search_flight_options", start, result)
+            return result
+
+        flights = data.get("data") or []
+        if not flights:
+            result = "未查询到符合条件的航班。可尝试只填写出发/到达机场三字码，或换用当天/近期日期。"
+            _log_tool_end("search_flight_options", start, result)
+            return result
+
+        result = _format_aviationstack_flights(flights, dep_iata, arr_iata, limit)
+        if letsfg_result:
+            result = f"{letsfg_result}\n\nAviationstack 回退结果：\n{result}"
+        _log_tool_end("search_flight_options", start, result)
+        return result
+    except requests.HTTPError as exc:
+        status_code = exc.response.status_code if exc.response is not None else ""
+        if status_code == 403 and date:
+            try:
+                fallback_params = dict(params)
+                fallback_params.pop("flight_date", None)
+                fallback_data = _request_json(f"{AVIATIONSTACK_BASE_URL}/flights", params=fallback_params, timeout=15)
+                flights = fallback_data.get("data") or []
+                if flights:
+                    result = _format_aviationstack_flights(
+                        flights,
+                        dep_iata,
+                        arr_iata,
+                        limit,
+                        note=f"提示：当前 Aviationstack 账号不支持按指定日期 {search_date} 查询，已自动回退为近期/实时航班结果。",
+                    )
+                    if letsfg_result:
+                        result = f"{letsfg_result}\n\nAviationstack 回退结果：\n{result}"
+                    _log_tool_end("search_flight_options", start, result)
+                    return result
+            except Exception as fallback_exc:
+                print(f"Aviationstack 日期查询失败后回退也失败：{fallback_exc}")
+        result = f"{letsfg_result}\n\n航班查询暂不可用：HTTP {status_code or '未知'}。".strip()
+        _log_tool_end("search_flight_options", start, result)
+        return result
+    except Exception as exc:
+        result = f"{letsfg_result}\n\n航班查询异常：{exc}".strip()
+        _log_tool_end("search_flight_options", start, result)
+        return result
