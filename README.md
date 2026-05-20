@@ -19,12 +19,13 @@
 - Flask Web 聊天界面
 - SSE 流式返回 Agent 执行过程
 - SQLite 历史会话持久化
+- 本地知识库 RAG + FAISS 向量检索，支持课程实验资料、Agent 架构说明、历史会话经验和城市攻略补充
 - Markdown 回答 + 结构化卡片双输出
 - 高德地图、和风天气、LetsFG、Aviationstack、12306-MCP、Booking.com/RapidAPI 等外部数据源接入
 
 当前工具数量：
 
-- 16 个核心 Python 工具
+- 18 个核心 Python 工具
 - 3 个可选 12306 火车票工具
 - Node.js / npx 不可用时，12306 工具自动降级，不影响其他功能
 
@@ -41,6 +42,8 @@
 - Aviationstack API
 - Booking.com / RapidAPI
 - 12306-MCP
+- 本地 Markdown 知识库 RAG
+- FAISS CPU
 - SQLite
 - 原生 HTML / CSS / JavaScript
 - SSE 流式通信
@@ -152,6 +155,11 @@ RAPIDAPI_HOST=booking-com15.p.rapidapi.com
 ├── .env.example                   # 环境变量模板
 ├── README.md                      # 项目说明
 ├── EXPERIMENT_REPORT.md           # 实验报告材料
+├── knowledge/                     # 本地 RAG 知识库，支持 Markdown / TXT
+│   ├── agent_architecture.md       # 智能体架构、LangChain、RAG/Memory/Skill
+│   ├── travel_tips.md              # 通用旅行规划知识
+│   ├── history_insights.md         # 从历史会话整理出的城市经验和工具经验
+│   └── cities/                     # 城市攻略和避坑建议
 ├── data/
 │   └── travel_agent.db            # SQLite 数据库，运行后生成
 ├── static/
@@ -182,6 +190,7 @@ RAPIDAPI_HOST=booking-com15.p.rapidapi.com
         ├── tool_formatters.py     # 工具输出格式化、耗时/距离/航班/日志文案
         ├── tool_hotels.py         # Booking.com/RapidAPI 目的地解析和酒店查询辅助
         ├── tool_maps.py           # 高德地点解析、坐标归一化、地图链接基础能力
+        ├── tool_rag.py            # 本地知识库 RAG 检索工具
         ├── tool_transport.py      # 驾车、公交/地铁、步行、骑行、距离矩阵、实时路况
         ├── tool_weather.py        # 天气、空气质量、天气预警、生活指数工具
         ├── trace.py               # 执行报告、工具状态、trace 清洗
@@ -201,6 +210,7 @@ RAPIDAPI_HOST=booking-com15.p.rapidapi.com
 - `travel_agent.tool_formatters` 独立保存距离、时间、航班、POI、日志等格式化逻辑，后续改展示文案时不需要动 API 调用代码。
 - `travel_agent.tool_hotels` 独立承接 Booking.com/RapidAPI 的城市目的地解析和酒店查询辅助逻辑。
 - `travel_agent.tool_maps` 独立承接高德地点解析、坐标归一化、路线起终点解析和地图 URI 生成等基础地图能力。
+- `travel_agent.tool_rag` 独立承接本地知识库检索，资料来源为 `knowledge/` 下的 Markdown/TXT 文档，当前使用 FAISS 向量检索和本地哈希嵌入。
 - `travel_agent.tool_transport` 独立承接高德驾车、公交/地铁、步行、骑行、距离矩阵、实时路况等交通工具。
 - `travel_agent.tool_weather` 独立承接天气、空气质量、灾害预警、生活指数四个天气相关工具。
 - `travel_agent.tools` 仍保留为统一工具注册入口，避免影响 LangChain Agent 的工具列表；后续新增/删除工具时优先改对应领域模块，再在这里导入并加入 `TRAVEL_TOOLS`。
@@ -277,6 +287,23 @@ Agent 的最终回答末尾会输出 JSON，后端提取为 `structured_data`，
 
 如果模型没有输出合法 JSON，系统会自动回退到纯 Markdown，不影响回答展示。
 
+### 本地知识库 RAG
+
+项目新增了 `knowledge/` 本地知识库和 `search_local_knowledge` 工具。Agent 在遇到课程实验、智能体架构、LangChain、RAG/Memory/Skill、项目说明、城市攻略和避坑建议等问题时，可以先检索本地资料，再结合实时工具结果回答。
+
+当前知识库特点：
+
+- 支持 Markdown 和 TXT 文档，直接放入 `knowledge/` 或其子目录即可。
+- 运行时按需读取并自动检查文件修改时间，知识库变化后会重建本地索引。
+- 当前使用 FAISS `IndexFlatIP` 做向量检索，向量由本地字符 n-gram 哈希嵌入生成，不需要下载大模型权重。
+- 后续可以把 `tool_rag.py` 内部的哈希嵌入替换为 sentence-transformers、BGE、OpenAI Embeddings 或其他 embedding 服务，外部工具名和 Agent 调用方式保持不变。
+
+使用边界：
+
+- RAG 用于静态知识补充，不替代实时 API。
+- 天气、空气质量、预警、路况、公交、航班、高铁、酒店价格仍应调用对应实时工具。
+- 如果知识库没有命中，工具会明确返回“未检索到足够相关的本地知识”，不会伪造资料。
+
 ### 地图和地点体验
 
 高德地图相关能力：
@@ -327,6 +354,7 @@ Agent 的最终回答末尾会输出 JSON，后端提取为 `structured_data`，
 | `search_travel_pois` | 高德 | 全城景点、餐饮、商圈、酒店 POI |
 | `search_nearby_pois` | 高德 | 指定地点周边 POI |
 | `search_hotel_prices` | Booking.com/RapidAPI | 真实酒店价格参考 |
+| `search_local_knowledge` | 本地知识库 RAG + FAISS | 实验资料、Agent 架构、LangChain、历史会话经验、城市攻略和避坑建议 |
 | `get_place_location` | 高德 | 地点解析和坐标 |
 | `get_map_marker_link` | 高德 URI | 无 Key 地图链接 |
 
@@ -460,6 +488,13 @@ Get-CimInstance Win32_Process |
 - 新增 `travel_agent.tool_transport`，把驾车、公交/地铁、步行、骑行、距离矩阵、实时路况六个交通工具从 `tools.py` 中拆出。
 - 优化酒店查询降级策略：RapidAPI 未配置、免费额度用尽、限流或接口异常时，`search_hotel_prices` 自动回退高德地图酒店 POI，继续提供住宿位置参考，并明确标注“不含实时房价”。
 - 清理前端 `static/app.js` 中被后续实现覆盖的重复函数定义，避免维护时误改旧版 `renderTrace`、`requestChatStream`、`appendMeta`、`setBusy` 等无效逻辑。
+- 新增 `knowledge/` 本地知识库，补充智能体架构、LangChain、RAG/Memory/Skill、通用旅行规划和常用城市攻略资料。
+- 新增 `travel_agent.tool_rag.search_local_knowledge` 工具，Agent 可在课程实验说明、项目实现思路、城市攻略和避坑建议场景中检索本地知识。
+- 更新 Agent 提示词：明确 RAG 是静态资料补充，不替代天气、交通、酒店、航班、高铁等实时工具。
+- 前端执行报告新增 RAG 工具展示文案，便于观察本地知识库检索是否被调用。
+- 将 RAG 检索层升级为 FAISS：使用 `faiss.IndexFlatIP` 和本地字符 n-gram 哈希嵌入构建向量索引，无需额外模型下载。
+- 检查本地 SQLite 历史会话，从已有旅行规划和工具异常处理中整理出 `knowledge/history_insights.md`，沉淀沈阳、太原、吉林、张家口、银川、重庆、桂林、哈尔滨、武汉、广州、成都等城市经验。
+- 更新依赖：新增 `faiss-cpu`，并将 `numpy` 约束为 `>=1.25,<2.0`，避免 numpy 2.x 对当前 Anaconda 生态造成兼容风险。
 
 ## 接手指南
 
@@ -480,6 +515,8 @@ C:\Users\BaoXinJie\anaconda3\python.exe app.py
 - `src/travel_agent/tool_flights.py`：LetsFG 本地搜索和航班辅助逻辑。
 - `src/travel_agent/tool_hotels.py`：Booking.com/RapidAPI 酒店辅助逻辑。
 - `src/travel_agent/tool_maps.py`：高德地点解析和坐标基础能力。
+- `src/travel_agent/tool_rag.py`：本地知识库 RAG + FAISS 检索逻辑。
+- `knowledge/`：可直接扩展的本地 Markdown/TXT 知识库，已包含实验资料、城市攻略和历史会话沉淀知识。
 - `src/travel_agent/structured.py`：后端提取结构化 JSON 和卡片兜底数据。
 - `static/app.js`：前端聊天、SSE、卡片和地图渲染。
 
@@ -587,4 +624,4 @@ node --check static\app.js
 
 可以概括为：
 
-> 基于 LangChain 和 DeepSeek 的智能旅行规划 Agent，支持多轮对话、SSE 流式执行过程可视化、SQLite 历史持久化和 18 个外部工具调用。系统接入高德地图、和风天气、LetsFG、Aviationstack 与 12306-MCP，具备天气、预警、空气质量、驾车、公交、步行、骑行、实时路况、实时机票报价、航班时刻回退、火车票、POI 搜索、周边搜索、地点解析和地图展示能力。前端将模型输出的结构化 JSON 渲染为天气、交通、预算、行程、POI 和地图卡片，并支持地点联想、默认出发地识别、Agent 执行报告导出等交互。
+> 基于 LangChain 和 DeepSeek 的智能旅行规划 Agent，支持多轮对话、SSE 流式执行过程可视化、SQLite 历史持久化、本地知识库 RAG + FAISS 和 21 个工具调用。系统接入高德地图、和风天气、LetsFG、Aviationstack、12306-MCP 与本地 Markdown 知识库，具备天气、预警、空气质量、驾车、公交、步行、骑行、实时路况、实时机票报价、航班时刻回退、火车票、POI 搜索、周边搜索、地点解析、城市攻略检索和地图展示能力。前端将模型输出的结构化 JSON 渲染为天气、交通、预算、行程、POI 和地图卡片，并支持地点联想、默认出发地识别、Agent 执行报告导出等交互。

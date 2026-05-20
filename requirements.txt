@@ -7,3 +7,5 @@ tenacity>=9.1.0
 letsfg>=2026.5.75
 PyJWT>=2.8.0
 cryptography>=42.0.0
+faiss-cpu>=1.13.2
+numpy>=1.25,<2.0

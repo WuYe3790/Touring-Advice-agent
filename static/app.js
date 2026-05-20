@@ -1140,6 +1140,7 @@ const TRACE_TOOL_INFO = {
   get_traffic_status: { label: "路况", title: "查询实时路况", desc: "检查指定地点周边道路拥堵情况和通行风险。" },
   search_travel_pois: { label: "POI", title: "搜索目的地地点", desc: "查询景点、餐饮、商圈、酒店等 POI。" },
   search_nearby_pois: { label: "周边", title: "搜索周边地点", desc: "围绕指定地点按半径查询餐饮、住宿或地铁站。" },
+  search_local_knowledge: { label: "RAG", title: "检索本地知识库", desc: "从本地攻略、实验资料和 Agent 架构文档中检索静态知识。" },
   get_place_location: { label: "定位", title: "解析地点位置", desc: "核验地点地址和经纬度。" },
   get_map_marker_link: { label: "地图", title: "生成地图链接", desc: "生成可打开的高德地图标记链接。" },
   search_train_tickets: { label: "火车", title: "查询火车余票", desc: "查询真实车次、时刻、余票和票价。" },
@@ -1156,7 +1157,7 @@ function traceArgsSummary(args) {
   const preferred = [
     "city", "date", "origin", "destination", "origin_city", "destination_city",
     "departure", "arrival", "from_city", "to_city", "place", "keyword",
-    "origins", "train_code", "train_filter_flags", "limit",
+    "origins", "query", "top_k", "train_code", "train_filter_flags", "limit",
   ];
   const chips = preferred
     .filter(key => args[key] !== undefined && args[key] !== "" && args[key] !== null)

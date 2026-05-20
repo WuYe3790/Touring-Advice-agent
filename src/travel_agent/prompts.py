@@ -91,8 +91,10 @@ REAL_DATA_TOOL_PROMPT = """
 17. search_interline_train_tickets 可用 12306 查询中转余票方案，适合直达车次少、不合适或用户明确接受中转时调用。
 18. get_train_route 可用 12306 查询特定车次的经停站和时刻表。
 19. search_flight_options 会优先尝试 LetsFG 本地实时机票搜索，返回真实机票报价；如果 LetsFG 超时或失败，会自动回退到 Aviationstack 查询航班时刻/状态。Aviationstack 不提供机票价格。
+20. search_local_knowledge 是本地知识库 RAG 检索工具，适合查询课程实验、智能体架构、LangChain 优势、RAG/Memory/Skill、项目实现说明、城市攻略经验和避坑建议；它是静态资料补充，不替代实时天气、交通、酒店、航班和火车票工具。
 
 使用要求：
+- 当用户询问智能体架构、LangChain、RAG、Memory、Skill、实验要求、项目实现思路、README/本地资料，或需要城市攻略经验、避坑建议、开放时间提醒、片区组织经验等静态知识时，应调用 search_local_knowledge。完整旅行规划中，RAG 可作为攻略和注意事项补充；但实时天气、空气质量、预警、路况、公交、航班、高铁、酒店价格仍必须调用对应实时工具，不要用本地知识库编造实时数据。
 - 当用户只是要求查某一种信息时，严格选择对应工具并窄回答：查航班只调用 search_flight_options；查高铁/火车只调用 search_train_tickets 或 search_interline_train_tickets；查天气只调用天气工具；查市内换乘只调用 get_public_transit_plan/步行/骑行等路线工具；查地点或周边只调用地点/POI 工具。不要因为识别出了城市就自动查询天气、景点、预算或完整日程。
 - 单点查询的正文不要输出完整规划模板，不要包含“每日行程”“住宿建议”“预算分析”“景点推荐”等无关小节；只给结果、数据来源和必要限制说明。JSON 中也只填相关字段，例如航班查询只填 transport_options 和 tips；周边餐饮只填 poi_recommendations 和 tips；天气查询只填 weather/weather_alerts/weather_indices 和 tips。
 - 单点查询时，summary 用一句话概括查询结果；daily_itinerary 必须为 []；hotel_options 只有酒店查询才填写，否则为 []；budget 使用 {"total": 0, "breakdown": {}, "currency": "CNY", "notes": ""}；无关字段必须为空数组，不要为了卡片好看而填充。
@@ -111,5 +113,5 @@ REAL_DATA_TOOL_PROMPT = """
 - 用户提到"高铁"时传 train_filter_flags="G"，提到"动车"时传"D"。将 search_train_tickets 返回的车次号、出发/到达时刻、座型余票、票价如实地写入 transport_options（每条一个方案：mode 为"高铁 G车次号"，duration 为历时，cost_estimate 为座型+票价）和 daily_itinerary 的交通步骤中。
 - 若 search_train_tickets 没有查到合适直达车，或用户提到"中转/换乘/怎么转车"，应调用 search_interline_train_tickets；不得自行编造中转车次。中转方案写入 transport_options 时 category 使用 "interline_train"，总方案写在外层，每一段车次写入 legs，并尽量包含换乘站、换乘等待时间、总耗时、各段票价/余票。
 - 当用户明确提到"飞机/航班/机场/机票/机票价格"时，应调用 search_flight_options。跨城距离较远（例如驾车超过约500公里、火车耗时较长、或目的地适合航空出行）时，也应把 search_flight_options 作为备选工具调用。航班工具参数优先传机场 IATA 三字码；若不确定，可传常见城市名，工具内置部分中国城市机场映射；若用户给出人数，把成人数传入 adults。若工具返回 LetsFG 结果，最终回答应展示票价、航司、出发/到达时间和数据限制；若工具返回 Aviationstack 回退结果，必须说明这是航班时刻/状态参考，不含真实票价。
-- 最终回答应说明关键数据来源，例如"天气和空气质量来自和风天气""地点和路线来自高德地图""酒店价格来自 Booking.com/RapidAPI""酒店位置兜底参考来自高德地图 POI""火车票来自12306""航班来自 Aviationstack"。
+- 最终回答应说明关键数据来源，例如"天气和空气质量来自和风天气""地点和路线来自高德地图""酒店价格来自 Booking.com/RapidAPI""酒店位置兜底参考来自高德地图 POI""火车票来自12306""航班来自 Aviationstack""攻略和实验资料来自本地知识库 RAG"。
 """

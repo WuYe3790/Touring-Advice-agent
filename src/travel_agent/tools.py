@@ -30,6 +30,7 @@ from travel_agent.tool_pois import (
 )
 from travel_agent.tool_hotels import search_hotel_prices
 from travel_agent.tool_flights import search_flight_options
+from travel_agent.tool_rag import search_local_knowledge
 
 
 DEFAULT_DATE = (datetime.now() + timedelta(days=1)).strftime("%Y-%m-%d")
@@ -101,6 +102,7 @@ TRAVEL_TOOLS = [
     search_travel_pois,
     search_nearby_pois,
     search_hotel_prices,
+    search_local_knowledge,
     get_place_location,
     get_map_marker_link,
 ]
