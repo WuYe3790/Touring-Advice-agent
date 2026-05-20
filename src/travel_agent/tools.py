@@ -31,6 +31,7 @@ from travel_agent.tool_pois import (
 from travel_agent.tool_hotels import search_hotel_prices
 from travel_agent.tool_flights import search_flight_options
 from travel_agent.tool_rag import search_local_knowledge
+from travel_agent.skills import city_transit_skill, intercity_transport_skill
 
 
 DEFAULT_DATE = (datetime.now() + timedelta(days=1)).strftime("%Y-%m-%d")
@@ -93,6 +94,8 @@ TRAVEL_TOOLS = [
     get_weather_indices,
     calculate_trip_budget,
     get_transport_advice,
+    city_transit_skill,
+    intercity_transport_skill,
     search_flight_options,
     get_public_transit_plan,
     get_walking_route,

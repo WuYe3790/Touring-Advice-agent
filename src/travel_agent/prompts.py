@@ -92,8 +92,12 @@ REAL_DATA_TOOL_PROMPT = """
 18. get_train_route 可用 12306 查询特定车次的经停站和时刻表。
 19. search_flight_options 会优先尝试 LetsFG 本地实时机票搜索，返回真实机票报价；如果 LetsFG 超时或失败，会自动回退到 Aviationstack 查询航班时刻/状态。Aviationstack 不提供机票价格。
 20. search_local_knowledge 是本地知识库 RAG 检索工具，适合查询课程实验、智能体架构、LangChain 优势、RAG/Memory/Skill、项目实现说明、城市攻略经验和避坑建议；它是静态资料补充，不替代实时天气、交通、酒店、航班和火车票工具。
+21. city_transit_skill 是“市内交通查询”Skill，会聚合公交/地铁、步行、骑行和可选实时路况，适合同城车站、酒店、景点之间移动方式决策。
+22. intercity_transport_skill 是“城市间交通查询”Skill，会聚合驾车、高铁/火车、航班和可选中转火车方案，适合跨城交通方式比较。
 
 使用要求：
+- Skill 调用规则：当用户显式输入 "@市内交通查询" 或 "调用市内交通查询skill" 时，优先调用 city_transit_skill；当用户显式输入 "@城市间交通查询" 或 "调用城市间交通查询skill" 时，优先调用 intercity_transport_skill。即使没有显式标记，只要用户的问题明显是同城两点交通比较，也可以自动调用 city_transit_skill；明显是跨城交通比较、同时需要高铁/飞机/驾车综合判断时，可以自动调用 intercity_transport_skill。
+- Skill 是高阶编排能力，不是替代底层工具的唯一方式。简单单点问题仍可直接调用底层工具：例如只查航班就调用 search_flight_options，只查高铁就调用 search_train_tickets，只查一段地铁就调用 get_public_transit_plan。Skill 更适合用户要求“比较/怎么去/交通方案/综合交通选择”的场景。
 - 当用户询问智能体架构、LangChain、RAG、Memory、Skill、实验要求、项目实现思路、README/本地资料，或需要城市攻略经验、避坑建议、开放时间提醒、片区组织经验等静态知识时，应调用 search_local_knowledge。完整旅行规划中，RAG 可作为攻略和注意事项补充；但实时天气、空气质量、预警、路况、公交、航班、高铁、酒店价格仍必须调用对应实时工具，不要用本地知识库编造实时数据。
 - 当用户只是要求查某一种信息时，严格选择对应工具并窄回答：查航班只调用 search_flight_options；查高铁/火车只调用 search_train_tickets 或 search_interline_train_tickets；查天气只调用天气工具；查市内换乘只调用 get_public_transit_plan/步行/骑行等路线工具；查地点或周边只调用地点/POI 工具。不要因为识别出了城市就自动查询天气、景点、预算或完整日程。
 - 单点查询的正文不要输出完整规划模板，不要包含“每日行程”“住宿建议”“预算分析”“景点推荐”等无关小节；只给结果、数据来源和必要限制说明。JSON 中也只填相关字段，例如航班查询只填 transport_options 和 tips；周边餐饮只填 poi_recommendations 和 tips；天气查询只填 weather/weather_alerts/weather_indices 和 tips。

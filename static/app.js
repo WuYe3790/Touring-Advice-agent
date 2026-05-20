@@ -15,6 +15,7 @@ const aviationStatus = document.querySelector("#aviationStatus");
 const hotelStatus = document.querySelector("#hotelStatus");
 const locationStatus = document.querySelector("#locationStatus");
 const conversationListEl = document.querySelector("#conversationList");
+const skillsListEl = document.querySelector("#skillsList");
 const newChatBtn = document.querySelector("#newChatBtn");
 const locateBtn = document.querySelector("#locateBtn");
 const inputSuggestToggle = document.querySelector("#inputSuggestToggle");
@@ -1131,6 +1132,8 @@ const TRACE_TOOL_INFO = {
   get_weather_alerts: { label: "预警", title: "查询天气预警", desc: "检查暴雨、大风、高温等灾害预警。" },
   calculate_trip_budget: { label: "预算", title: "计算预算", desc: "按人数、天数、住宿、餐饮和门票估算费用。" },
   search_hotel_prices: { label: "酒店", title: "查询酒店/住宿参考", desc: "优先查询 Booking.com/RapidAPI 实时价格，失败时回退高德酒店 POI。" },
+  city_transit_skill: { label: "Skill", title: "市内交通查询 Skill", desc: "综合公交/地铁、步行、骑行和可选路况，给出同城移动建议。" },
+  intercity_transport_skill: { label: "Skill", title: "城市间交通查询 Skill", desc: "综合驾车、高铁/火车、航班和可选中转，比较跨城交通方式。" },
   get_transport_advice: { label: "驾车", title: "规划驾车路线", desc: "查询驾车距离、耗时和过路费参考。" },
   search_flight_options: { label: "航班", title: "查询航班", desc: "查询航班时刻、机场、航站楼和状态。" },
   get_public_transit_plan: { label: "公交", title: "规划公交/地铁", desc: "查询市内公共交通换乘方案。" },
@@ -1157,7 +1160,7 @@ function traceArgsSummary(args) {
   const preferred = [
     "city", "date", "origin", "destination", "origin_city", "destination_city",
     "departure", "arrival", "from_city", "to_city", "place", "keyword",
-    "origins", "query", "top_k", "train_code", "train_filter_flags", "limit",
+    "origins", "query", "top_k", "train_code", "train_filter_flags", "adults", "limit",
   ];
   const chips = preferred
     .filter(key => args[key] !== undefined && args[key] !== "" && args[key] !== null)
@@ -1337,6 +1340,53 @@ formEl.addEventListener("submit", (event) => {
   activeController = null;
   setBusy(false);
 }, true);
+
+function insertSkillCall(skill) {
+  if (!inputEl || !skill) return;
+  const call = skill.explicit_call || `@${skill.display_name || skill.name}`;
+  const current = inputEl.value.trim();
+  inputEl.value = current ? `${call} ${current}` : `${call} `;
+  inputEl.focus();
+  inputEl.selectionStart = inputEl.selectionEnd = inputEl.value.length;
+}
+
+function renderSkills(skills) {
+  if (!skillsListEl) return;
+  if (!Array.isArray(skills) || !skills.length) {
+    skillsListEl.innerHTML = '<div class="skill-empty">暂无已安装 Skill</div>';
+    return;
+  }
+  skillsListEl.innerHTML = "";
+  skills.forEach((skill) => {
+    const card = document.createElement("div");
+    card.className = "skill-card";
+    const tools = (skill.tools || []).slice(0, 4)
+      .map((tool) => `<span>${escapeHtml(tool)}</span>`)
+      .join("");
+    card.innerHTML = `
+      <div class="skill-card-head">
+        <h3>${escapeHtml(skill.display_name || skill.name || "Skill")}</h3>
+        <button class="skill-use-btn" type="button">使用</button>
+      </div>
+      <p>${escapeHtml(skill.description || "")}</p>
+      <span class="skill-call">${escapeHtml(skill.explicit_call || `@${skill.display_name || skill.name || "Skill"}`)}</span>
+      ${tools ? `<div class="skill-tools">${tools}</div>` : ""}
+    `;
+    card.querySelector(".skill-use-btn")?.addEventListener("click", () => insertSkillCall(skill));
+    skillsListEl.appendChild(card);
+  });
+}
+
+async function loadSkills() {
+  if (!skillsListEl) return;
+  try {
+    const response = await fetch("/api/skills");
+    const data = await response.json();
+    renderSkills(data.skills || []);
+  } catch {
+    skillsListEl.innerHTML = '<div class="skill-empty">读取失败</div>';
+  }
+}
 
 async function loadStatus() {
   try {
@@ -1782,6 +1832,7 @@ inputEl.addEventListener("keydown", (event) => {
 renderWelcome();
 updateLocationStatus();
 loadStatus();
+loadSkills();
 detectIpLocation();
 loadConversations().then(() => {
   if (currentConversationId) {

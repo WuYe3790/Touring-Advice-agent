@@ -7,6 +7,7 @@ import requests
 from flask import Blueprint, Response, abort, jsonify, render_template, request
 
 from travel_agent.config import load_llm_config
+from travel_agent.skills import list_installed_skills
 from travel_agent.train_tools import is_train_tools_available
 
 
@@ -71,6 +72,11 @@ def status():
             "train_tools_available": is_train_tools_available(),
             "aviationstack_key_loaded": bool(os.getenv("AVIATIONSTACK_API_KEY", "").strip()),
             "rapidapi_key_loaded": bool(os.getenv("RAPIDAPI_KEY", "").strip()),
+            "skill_count": len(list_installed_skills()),
         }
     )
 
+
+@core_bp.get("/api/skills")
+def skills():
+    return jsonify({"skills": list_installed_skills()})

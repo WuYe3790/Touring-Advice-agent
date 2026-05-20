@@ -20,13 +20,15 @@
 - SSE 流式返回 Agent 执行过程
 - SQLite 历史会话持久化
 - 本地知识库 RAG + FAISS 向量检索，支持课程实验资料、Agent 架构说明、历史会话经验和城市攻略补充
+- Skill 高阶编排能力，支持智能体自动判断调用，也支持用户通过前端显式调用
 - Markdown 回答 + 结构化卡片双输出
 - 高德地图、和风天气、LetsFG、Aviationstack、12306-MCP、Booking.com/RapidAPI 等外部数据源接入
 
 当前工具数量：
 
-- 18 个核心 Python 工具
+- 20 个核心 Python 工具
 - 3 个可选 12306 火车票工具
+- 2 个已安装 Skill
 - Node.js / npx 不可用时，12306 工具自动降级，不影响其他功能
 
 ## 技术栈
@@ -182,6 +184,7 @@ RAPIDAPI_HOST=booking-com15.p.rapidapi.com
         ├── cli.py                 # CLI 参数解析
         ├── config.py              # 配置读取
         ├── prompts.py             # 系统提示词、工具使用规则、结构化输出协议
+        ├── skills.py              # Skill 注册中心和高阶编排工具
         ├── storage.py             # SQLite 会话持久化
         ├── structured.py          # 结构化 JSON 提取、卡片数据兜底解析
         ├── tool_clients.py        # API Key 读取、通用 HTTP 请求、和风 JWT 认证
@@ -211,6 +214,7 @@ RAPIDAPI_HOST=booking-com15.p.rapidapi.com
 - `travel_agent.tool_hotels` 独立承接 Booking.com/RapidAPI 的城市目的地解析和酒店查询辅助逻辑。
 - `travel_agent.tool_maps` 独立承接高德地点解析、坐标归一化、路线起终点解析和地图 URI 生成等基础地图能力。
 - `travel_agent.tool_rag` 独立承接本地知识库检索，资料来源为 `knowledge/` 下的 Markdown/TXT 文档，当前使用 FAISS 向量检索和本地哈希嵌入。
+- `travel_agent.skills` 独立承接 Skill 注册和高阶编排。Skill 可以像工具一样被 Agent 自动调用，也可以由用户在前端通过 `@技能名` 显式触发。
 - `travel_agent.tool_transport` 独立承接高德驾车、公交/地铁、步行、骑行、距离矩阵、实时路况等交通工具。
 - `travel_agent.tool_weather` 独立承接天气、空气质量、灾害预警、生活指数四个天气相关工具。
 - `travel_agent.tools` 仍保留为统一工具注册入口，避免影响 LangChain Agent 的工具列表；后续新增/删除工具时优先改对应领域模块，再在这里导入并加入 `TRAVEL_TOOLS`。
@@ -304,6 +308,26 @@ Agent 的最终回答末尾会输出 JSON，后端提取为 `structured_data`，
 - 天气、空气质量、预警、路况、公交、航班、高铁、酒店价格仍应调用对应实时工具。
 - 如果知识库没有命中，工具会明确返回“未检索到足够相关的本地知识”，不会伪造资料。
 
+### Skill 高阶编排
+
+项目新增了 `travel_agent.skills`，把一组底层工具封装成更接近“可复用能力”的 Skill。Skill 同时具备两种调用方式：
+
+- 自动调用：Agent 根据用户意图判断是否需要调用对应 Skill。
+- 显式调用：用户可以在输入框中写 `@市内交通查询` 或 `@城市间交通查询`，也可以在前端 Skills 面板点击“使用”自动插入调用标记。
+
+当前已安装 Skill：
+
+| Skill | 显式调用 | 聚合能力 | 适用场景 |
+|---|---|---|---|
+| 市内交通查询 | `@市内交通查询` | 公交/地铁、步行、骑行、可选路况 | 同城车站、酒店、景点之间怎么走 |
+| 城市间交通查询 | `@城市间交通查询` | 驾车、高铁/火车、可选中转、航班 | 两座城市之间比较交通方式 |
+
+后端接口：
+
+- `GET /api/skills`：返回当前已安装 Skill、描述、显式调用格式、示例和聚合的底层工具。
+
+注意：Skill 是高阶编排能力，不替代底层工具。用户只问“查航班”时仍优先直接调用航班工具；用户要求“比较怎么去”或显式使用 Skill 时才调用高阶 Skill。
+
 ### 地图和地点体验
 
 高德地图相关能力：
@@ -344,6 +368,8 @@ Agent 的最终回答末尾会输出 JSON，后端提取为 `structured_data`，
 | `get_weather_alerts` | 和风 JWT/API Key | 天气预警 v1，旧版 v7 兜底 |
 | `get_weather_indices` | 和风 JWT/API Key | 运动、穿衣、防晒、舒适度、交通等生活指数 |
 | `calculate_trip_budget` | 本地计算 | 预算估算 |
+| `city_transit_skill` | Skill 编排 | 市内交通查询，聚合公交/地铁、步行、骑行和路况 |
+| `intercity_transport_skill` | Skill 编排 | 城市间交通查询，聚合驾车、铁路、航班和中转方案 |
 | `get_transport_advice` | 高德 | 驾车路线、距离、耗时、过路费 |
 | `search_flight_options` | LetsFG > Aviationstack | 优先实时机票报价；超时或失败时回退航班时刻/状态 |
 | `get_public_transit_plan` | 高德 | 公交/地铁换乘 |
@@ -495,6 +521,9 @@ Get-CimInstance Win32_Process |
 - 将 RAG 检索层升级为 FAISS：使用 `faiss.IndexFlatIP` 和本地字符 n-gram 哈希嵌入构建向量索引，无需额外模型下载。
 - 检查本地 SQLite 历史会话，从已有旅行规划和工具异常处理中整理出 `knowledge/history_insights.md`，沉淀沈阳、太原、吉林、张家口、银川、重庆、桂林、哈尔滨、武汉、广州、成都等城市经验。
 - 更新依赖：新增 `faiss-cpu`，并将 `numpy` 约束为 `>=1.25,<2.0`，避免 numpy 2.x 对当前 Anaconda 生态造成兼容风险。
+- 新增 Skill 进阶版基础架构：`travel_agent.skills` 作为 Skill 注册中心，Skill 既可被 Agent 自动判断调用，也支持用户通过 `@技能名` 显式触发。
+- 新增两个交通类 Skill：`city_transit_skill`（市内交通查询）和 `intercity_transport_skill`（城市间交通查询）。
+- 新增 `/api/skills` 接口和前端 Skills 面板，用户可查看当前安装的 Skill、底层工具和显式调用格式，并一键插入调用标记。
 
 ## 接手指南
 
@@ -510,6 +539,7 @@ C:\Users\BaoXinJie\anaconda3\python.exe app.py
 - `src/travel_agent/agent.py`：Agent 构建、普通/深度思考模式、流式事件组装。
 - `src/travel_agent/prompts.py`：系统提示词、单点查询约束、结构化 JSON 输出协议。
 - `src/travel_agent/tools.py`：LangChain 工具统一注册入口，`TRAVEL_TOOLS` 在这里组装。
+- `src/travel_agent/skills.py`：Skill 注册中心和高阶编排工具，新增 Skill 时优先在这里登记元数据和实现逻辑。
 - `src/travel_agent/tool_weather.py`：天气、空气质量、天气预警、生活指数。
 - `src/travel_agent/tool_transport.py`：驾车、公交/地铁、步行、骑行、距离矩阵、实时路况。
 - `src/travel_agent/tool_flights.py`：LetsFG 本地搜索和航班辅助逻辑。
@@ -624,4 +654,4 @@ node --check static\app.js
 
 可以概括为：
 
-> 基于 LangChain 和 DeepSeek 的智能旅行规划 Agent，支持多轮对话、SSE 流式执行过程可视化、SQLite 历史持久化、本地知识库 RAG + FAISS 和 21 个工具调用。系统接入高德地图、和风天气、LetsFG、Aviationstack、12306-MCP 与本地 Markdown 知识库，具备天气、预警、空气质量、驾车、公交、步行、骑行、实时路况、实时机票报价、航班时刻回退、火车票、POI 搜索、周边搜索、地点解析、城市攻略检索和地图展示能力。前端将模型输出的结构化 JSON 渲染为天气、交通、预算、行程、POI 和地图卡片，并支持地点联想、默认出发地识别、Agent 执行报告导出等交互。
+> 基于 LangChain 和 DeepSeek 的智能旅行规划 Agent，支持多轮对话、SSE 流式执行过程可视化、SQLite 历史持久化、本地知识库 RAG + FAISS、Skill 高阶编排和 23 个工具/Skill 调用。系统接入高德地图、和风天气、LetsFG、Aviationstack、12306-MCP 与本地 Markdown 知识库，具备天气、预警、空气质量、驾车、公交、步行、骑行、实时路况、实时机票报价、航班时刻回退、火车票、POI 搜索、周边搜索、地点解析、城市攻略检索、城市间交通 Skill 和市内交通 Skill 等能力。前端将模型输出的结构化 JSON 渲染为天气、交通、预算、行程、POI 和地图卡片，并支持地点联想、Skill 面板、显式 Skill 调用、默认出发地识别、Agent 执行报告导出等交互。
